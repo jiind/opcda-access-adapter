@@ -197,7 +197,7 @@ RunAs, machine-wide DCOM policy, firewall state, or vendor registration.
 
 If the HTTP status reports a COM activation/access failure, use the exact
 HRESULT and operation together with [Windows COM security and
-permissions](security-windows.md). Do not weaken machine-wide DCOM defaults.
+permissions](windows-security.md). Do not weaken machine-wide DCOM defaults.
 Some vendor servers require an interactive desktop or a vendor-supported
 service identity and may be unsuitable for LocalService operation.
 

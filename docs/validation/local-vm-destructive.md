@@ -2,59 +2,13 @@
 
 ## Execution status
 
-**PAUSED — the dedicated local VM was removed before scenario execution; no
-local-VM PASS result is recorded.**
-
-The VM was stopped and deleted on 2026-08-24 because this host did not have
-enough spare capacity to run it alongside another project's VM. Its libvirt
-domain, dedicated network, five dedicated volumes, temporary Windows images,
-and staging services were removed. Preparation observations below are retained
-for provenance only; the environment must be recreated before this gate can
-resume.
+**Not completed — no local-VM PASS result is recorded.** The isolated
+environment must be created before executing the scenario matrix.
 
 GitHub-hosted runner results do not satisfy this procedure. Evidence is valid
 only when produced by the dedicated local KVM/libvirt VM named
 `opcda-destructive-review` and recorded here with its base-image identity,
 adapter commit, fixture commit, architecture, and resource observations.
-
-## Preparation evidence (not a PASS result)
-
-Observed locally on 2026-08-24 (Asia/Seoul):
-
-- Microsoft URL: `https://aka.ms/WinServ2025vhd-enus`
-- downloaded VHDX size: `11,686,379,520` bytes
-- downloaded VHDX SHA-256:
-  `2d175924c8e647969a82e36f931b22397108bd94a030e0e947b7e66e47e0be9a`
-- `qemu-img check` result: no VHDX errors; virtual size 64 GiB
-- immutable converted qcow2 SHA-256:
-  `fda55996b3958e2e632e4584d80d65edf281c3c4221e937d7614d8fbee7bd0b0`
-- VM: `opcda-destructive-review`, UUID
-  `7b56cf9b-5d87-4027-aa2a-468339e61957`, Q35/UEFI, KVM, 4 vCPU,
-  10 GiB RAM
-- dedicated network: `opcda-review-net`, UUID
-  `beadcfb5-1014-4037-8e6c-0e37b6a55f29`, NAT
-  `192.168.231.0/24`; it is not shared with either unrelated local VM
-- initial guest: Windows Server 2025 Datacenter Evaluation, 64-bit, build
-  `26100`; WinRM Basic and `AllowUnencrypted` are false and its firewall
-  remote address is only `192.168.231.1`
-- protected `main` baseline: `ba256bda31c5356da8f4c70c63890994cb005771`
-- validation source commit: `da6d4f8f54a80ee9e03eb695393711a3bd6b50cd`
-- locally reproduced validation executables (`go1.26.0`, `-trimpath`, clean
-  VCS metadata):
-  - windows/386:
-    `bba343d81443decc2d00eecb0d880d86ee6ed94fbb783b6dd9129ae19124ca1d`
-  - windows/amd64:
-    `9a12a96af3335267178d4d1fc59c1adbade6fdad602f5e78138b386bd9ab7f8f`
-- pinned fixture source: `OPCF-Members/OPC-Classic-CoreComponents` commit
-  `efe0d1d1ea86a8a727bf26a501a261765e836766`; archive SHA-256
-  `ac886fa4be0db4f880aac4981dabf84cb14a45eff7b11ee1bcac5fd9a1b4728f`
-
-Windows security updates reached build `26100.33296`, Defender platform
-`4.18.26070.9`, and signature `1.457.306.0`. The VM was removed while the
-signed Build Tools installer was running, before the source build, full
-Defender scan, native test execution, destructive scenarios, and post-test
-reboot could complete. None of the preparation observations above is recorded
-as a scenario PASS.
 
 ## Isolation boundary
 

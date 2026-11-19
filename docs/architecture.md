@@ -116,8 +116,8 @@ Requests, batches, paths, strings, arrays, connections, concurrency, queues,
 and protocol state have explicit bounds. Setup does not change COM/DCOM or
 firewall policy. Services depend on the vendor accepting LocalService.
 
-Read [implementation status](implementation-status.md) for remaining work and
-[compatibility evidence](validation/compatibility.md) before making deployment claims.
+Consult [compatibility evidence](validation/compatibility.md) before making
+deployment claims.
 
 ## Scope boundaries
 

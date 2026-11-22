@@ -233,11 +233,17 @@ func TestAWrittenArrayMustAgreeWithItself(t *testing.T) {
 		{"more elements than the shape describes",
 			`{"dimensions":[{"lowerBound":0,"length":1}],"elements":[1,2]}`},
 		{"no dimensions at all", `{"dimensions":[],"elements":[1]}`},
-		{"an element of the wrong type", `{"dimensions":[{"length":1}],"elements":["x"]}`},
+		{"an element of the wrong type", `{"dimensions":[{"lowerBound":0,"length":1}],"elements":["x"]}`},
 		{"an element type that disagrees with the declared one",
-			`{"elementDataType":"VT_I2","dimensions":[{"length":1}],"elements":[1]}`},
+			`{"elementDataType":"VT_I2","dimensions":[{"lowerBound":0,"length":1}],"elements":[1]}`},
+		{"an element type object with the wrong code",
+			`{"elementDataType":{"code":2,"name":"VT_I4"},"dimensions":[{"lowerBound":0,"length":1}],"elements":[1]}`},
+		{"an element type object with the wrong name",
+			`{"elementDataType":{"code":3,"name":"VT_I2"},"dimensions":[{"lowerBound":0,"length":1}],"elements":[1]}`},
+		{"an element type object with a missing code",
+			`{"elementDataType":{"name":"VT_I4"},"dimensions":[{"lowerBound":0,"length":1}],"elements":[1]}`},
 		{"a field nothing defines",
-			`{"dimensions":[{"length":1}],"elements":[1],"stride":2}`},
+			`{"dimensions":[{"lowerBound":0,"length":1}],"elements":[1],"stride":2}`},
 		{"a flat array with no shape at all", `[1,2,3]`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -251,7 +257,7 @@ func TestAWrittenArrayMustAgreeWithItself(t *testing.T) {
 	// other: an array under "json" would be read as a scalar, and a scalar
 	// under "array" as a shape that is not there.
 	if _, err := decodeWriteValue(opcda.VTI4|opcda.VTArray, "json",
-		json.RawMessage(`{"dimensions":[{"length":1}],"elements":[1]}`)); err == nil {
+		json.RawMessage(`{"dimensions":[{"lowerBound":0,"length":1}],"elements":[1]}`)); err == nil {
 		t.Error("an array value under the json encoding was accepted")
 	}
 	if _, err := decodeWriteValue(opcda.VTI4, arrayValueEncoding, json.RawMessage(`1`)); err == nil {
@@ -267,29 +273,23 @@ func TestAnArrayWrittenBackIsTheArrayThatWasRead(t *testing.T) {
 		Dimensions:  []opcda.DADimension{{LowerBound: -1, Length: 3}},
 		Elements:    []any{1.5, math.Inf(1), math.NaN()},
 	}
-	published, err := encodeDAArray(original)
-	if err != nil {
-		t.Fatalf("encodeDAArray: %v", err)
-	}
-	// What a client sends back is the object it was handed, with the element
-	// type named the way the read published it.
-	var asRead map[string]json.RawMessage
-	if err := json.Unmarshal(published, &asRead); err != nil {
-		t.Fatal(err)
-	}
-	asRead["elementDataType"] = json.RawMessage(`"VT_R8"`)
-	returned, err := json.Marshal(asRead)
+	item := arrayReadResponse(t, original)
+	returned, err := json.Marshal(item["value"])
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	decoded, err := decodeWriteValue(opcda.VTR8|opcda.VTArray, arrayValueEncoding, returned)
-	if err != nil {
-		t.Fatalf("the published array was refused when written back: %v", err)
+	runtime := &writeRuntime{enabled: true, results: []opcda.WriteResult{{ItemID: "Test/Array", HRESULTPresent: true}}}
+	response := httptest.NewRecorder()
+	body := `{"items":[{"itemId":"Test/Array","dataType":"VT_R8|VT_ARRAY","valueEncoding":"array","value":` +
+		string(returned) + `}]}`
+	newWriteTestServer(runtime, 10).ServeHTTP(response,
+		newJSONRequest(stdhttp.MethodPost, "/v1/write", bytes.NewBufferString(body)))
+	if response.Code != stdhttp.StatusOK || len(runtime.items) != 1 {
+		t.Fatalf("status = %d, body = %s, source items = %d", response.Code, response.Body, len(runtime.items))
 	}
-	array, ok := decoded.(opcda.DAArray)
+	array, ok := runtime.items[0].Value.(opcda.DAArray)
 	if !ok {
-		t.Fatalf("decoded %#v", decoded)
+		t.Fatalf("decoded %#v", runtime.items[0].Value)
 	}
 	if array.ElementType != original.ElementType ||
 		len(array.Dimensions) != 1 || array.Dimensions[0] != original.Dimensions[0] {
@@ -317,7 +317,7 @@ func TestAnArrayWrittenBackIsTheArrayThatWasRead(t *testing.T) {
 func TestTheSpecialFloatRuleInsideAnArrayBelongsToFloatsAlone(t *testing.T) {
 	decodeElements := func(t *testing.T, elementType opcda.DAVarType, elements string) (any, error) {
 		t.Helper()
-		body := `{"dimensions":[{"length":1}],"elements":[` + elements + `]}`
+		body := `{"dimensions":[{"lowerBound":0,"length":1}],"elements":[` + elements + `]}`
 		return decodeWriteValue(elementType|opcda.VTArray, arrayValueEncoding, json.RawMessage(body))
 	}
 

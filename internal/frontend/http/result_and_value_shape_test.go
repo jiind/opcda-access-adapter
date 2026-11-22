@@ -129,6 +129,9 @@ func TestEachTypedWriteDecodeSaysWhatItWanted(t *testing.T) {
 	if _, err := decodeWriteValue(opcda.VTBSTR, "json", json.RawMessage(`"text"`)); err != nil {
 		t.Errorf("a VT_BSTR JSON string was refused: %v", err)
 	}
+	if value, err := decodeWriteValue(opcda.VTBSTR, "json", json.RawMessage(`""`)); err != nil || value != "" {
+		t.Errorf("an empty VT_BSTR string returned %q, %v", value, err)
+	}
 }
 
 // byref is still refused before any value is looked at: the adapter carries

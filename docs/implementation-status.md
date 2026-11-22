@@ -24,6 +24,11 @@ This page summarizes current coverage and release prerequisites.
 HTTP remains the default. MCP is inactive until selected explicitly. Write is
 disabled by default. Each process serves one local DA source through one frontend.
 
+HTTP and MCP Write require JSON strings for `VT_BSTR` and explicit lower
+bounds for arrays. Array Write accepts the Read value object with a matching
+declared VARTYPE. A recognized connection loss during branch ID lookup enters
+the DA runtime's reconnect path.
+
 ## Validation achieved
 
 | Evidence | What it establishes | Limit |

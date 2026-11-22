@@ -27,6 +27,10 @@ Nothing is invented either way: an ItemID is never reconstructed from a browse
 path. Canonical type and access rights are omitted when this
 Browse interface does not supply them.
 
+A recognized COM/RPC disconnect during a branch's `GetItemID` call fails the
+request with HTTP 503 `DA_METHOD_FAILED` and the source HRESULT. The runtime
+invalidates the connection and schedules a reconnect.
+
 `IOPCBrowseServerAddressSpace` is optional. A server returning
 `E_NOINTERFACE` reports Browse as `unsupported`, while known-ItemID Read stays
 available. Exceeding the hard entry limit fails with

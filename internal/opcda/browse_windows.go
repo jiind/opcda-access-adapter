@@ -286,30 +286,13 @@ func (session *daThreadSession) browseAddressSpace(request BrowseRequest, limits
 	}
 
 	if request.Filter == BrowseFilterAll || request.Filter == BrowseFilterBranch {
-		browse := session.browse
-		names, err := browse.enumerateNames(opcBrowseBranch, limits.MaxBrowseEntries, limits.MaxBSTRCodeUnits)
+		names, err := session.browse.enumerateNames(opcBrowseBranch, limits.MaxBrowseEntries, limits.MaxBSTRCodeUnits)
 		if err != nil {
 			return BrowseResult{}, err
 		}
-		for _, name := range names {
-			entry := BrowseEntry{Kind: BrowseEntryBranch, Name: name}
-			// A.3.1.2: "The ItemId obtained using the GetItemID is used as a
-			// part of the NodeId for each Branch." A branch has an ItemID in
-			// the source even though it is not an item, and GetItemID is how
-			// the source states it -- which is a different thing from
-			// reconstructing one from a browse path, the thing design §35.2
-			// forbids.
-			//
-			// A source may refuse to name a branch. That is its answer, not a
-			// failure, and the branch keeps a path-based identity.
-			itemID, err := browse.getItemID(name, limits.MaxBSTRCodeUnits, limits.MaxItemIDBytes)
-			if isConnectionLoss(err) {
-				return BrowseResult{}, err
-			}
-			if err == nil && itemID != "" {
-				entry.ItemID = &itemID
-			}
-			result.Entries = append(result.Entries, entry)
+		result.Entries, err = session.browse.branchEntries(names, limits)
+		if err != nil {
+			return BrowseResult{}, err
 		}
 	}
 	if request.Filter == BrowseFilterAll || request.Filter == BrowseFilterItem {
@@ -325,6 +308,24 @@ func (session *daThreadSession) browseAddressSpace(request BrowseRequest, limits
 		result.Entries = append(result.Entries, entries...)
 	}
 	return result, nil
+}
+
+func (browse *iopcBrowseServerAddressSpace) branchEntries(names []string, limits Limits) ([]BrowseEntry, error) {
+	var entries []BrowseEntry
+	for _, name := range names {
+		entry := BrowseEntry{Kind: BrowseEntryBranch, Name: name}
+		// OPC 10000-8 A.3.1.2 uses the branch ItemID supplied by GetItemID.
+		// A source that declines to name a branch leaves it addressable by path.
+		itemID, err := browse.getItemID(name, limits.MaxBSTRCodeUnits, limits.MaxItemIDBytes)
+		if isConnectionLoss(err) {
+			return nil, err
+		}
+		if err == nil && itemID != "" {
+			entry.ItemID = &itemID
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 func (browse *iopcBrowseServerAddressSpace) itemEntries(names []string, limits Limits) ([]BrowseEntry, error) {

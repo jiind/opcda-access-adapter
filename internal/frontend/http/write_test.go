@@ -138,6 +138,30 @@ func TestWriteDecodesExplicitSpecialFloats(t *testing.T) {
 	}
 }
 
+func TestWriteRejectsMissingStringValuesAndArrayLowerBounds(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		item string
+	}{
+		{"null BSTR", `"dataType":"VT_BSTR","valueEncoding":"json","value":null`},
+		{"null BSTR array element", `"dataType":"VT_BSTR|VT_ARRAY","valueEncoding":"array","value":{"dimensions":[{"lowerBound":0,"length":1}],"elements":[null]}`},
+		{"missing lower bound", `"dataType":"VT_I4|VT_ARRAY","valueEncoding":"array","value":{"dimensions":[{"length":1}],"elements":[42]}`},
+		{"null lower bound", `"dataType":"VT_I4|VT_ARRAY","valueEncoding":"array","value":{"dimensions":[{"lowerBound":null,"length":1}],"elements":[42]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := &writeRuntime{enabled: true, results: []opcda.WriteResult{{ItemID: "Test", HRESULTPresent: true}}}
+			response := httptest.NewRecorder()
+			body := `{"items":[{"itemId":"Test",` + test.item + `}]}`
+			newWriteTestServer(runtime, 10).ServeHTTP(response,
+				newJSONRequest(http.MethodPost, "/v1/write", bytes.NewBufferString(body)))
+			if response.Code != http.StatusBadRequest || runtime.calls != 0 {
+				t.Fatalf("status = %d, source calls = %d, body = %s", response.Code, runtime.calls, response.Body)
+			}
+			assertErrorCode(t, response, string(opcda.CodeInvalidValue))
+		})
+	}
+}
+
 func TestWriteRejectsBrowserAndNonJSONRequestsBeforeSourceCall(t *testing.T) {
 	tests := []struct {
 		name        string

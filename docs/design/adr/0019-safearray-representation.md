@@ -117,7 +117,7 @@ decision 7.
 {
   "valueEncoding": "array",
   "value": {
-    "elementDataType": "VT_I4",
+    "elementDataType": {"code": 3, "name": "VT_I4"},
     "dimensions": [
       {"lowerBound": 1, "length": 3},
       {"lowerBound": 0, "length": 2}
@@ -197,6 +197,12 @@ adapter builds the `SAFEARRAY` from it rather than inferring a shape. An element
 whose Go type does not match the declared element VARTYPE is refused, as a
 scalar is. Write stays disabled by default and is never retried or replayed;
 nothing here changes that.
+
+HTTP and MCP accept the emitted array `value` object unchanged, including the
+element type object with its numeric code and symbolic name. A Write can also
+use a matching symbolic element type or omit that field when the Write item
+already names the array VARTYPE. Each dimension explicitly supplies its lower
+bound, including zero.
 
 ### 9. The status is stated as unvalidated until a real source says otherwise
 

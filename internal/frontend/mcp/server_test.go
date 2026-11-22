@@ -198,8 +198,14 @@ func TestWritePolicyTypesAndNoRetry(t *testing.T) {
 	// 별도 세션에서 활성 정책을 고정해 상태 데이터 레이스를 만들지 않는다.
 	enabled := &testRuntime{state: opcda.RuntimeStatus{WriteEnabled: true}, write: runtime.write}
 	writer, _, writeCtx := testSession(t, enabled)
-	for _, value := range []string{"32768", "1.5", `"7"`} {
-		response, _ = callTool(t, writeCtx, writer, "da_write", `{"items":[{"itemId":"x","dataType":"VT_I2","valueEncoding":"json","value":`+value+`}]}`)
+	for _, item := range []string{
+		`"dataType":"VT_I2","valueEncoding":"json","value":32768`,
+		`"dataType":"VT_I2","valueEncoding":"json","value":1.5`,
+		`"dataType":"VT_I2","valueEncoding":"json","value":"7"`,
+		`"dataType":"VT_BSTR","valueEncoding":"json","value":null`,
+		`"dataType":"VT_I2|VT_ARRAY","valueEncoding":"array","value":{"dimensions":[{"length":1}],"elements":[7]}`,
+	} {
+		response, _ = callTool(t, writeCtx, writer, "da_write", `{"items":[{"itemId":"x",`+item+`}]}`)
 		if !response.IsError || calls.Load() != 0 {
 			t.Fatal("invalid Write value reached DA")
 		}

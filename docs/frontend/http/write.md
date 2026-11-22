@@ -37,11 +37,12 @@ v0 Write representations are:
 | non-finite `VT_R4/R8` | `"NaN"`, `"+Infinity"`, or `"-Infinity"` with `valueEncoding: float-special` |
 | `VT_ARRAY` | an object carrying the shape and the elements, with `valueEncoding: array` |
 | `VT_BOOL` | JSON boolean |
-| `VT_BSTR` | bounded JSON string |
+| `VT_BSTR` | bounded JSON string, including `""` for an empty string |
 
 Other types are explicitly unsupported. The result order matches the request,
-and per-item source HRESULTs remain in HTTP 200 responses. `TYPE_MISMATCH` is
-an item-level adapter error. A method-level HRESULT is a source-layer error.
+and per-item source HRESULTs remain in HTTP 200 responses. A mismatch with the
+item's canonical type produces an item-level `TYPE_MISMATCH`. A method-level
+HRESULT is a source-layer error.
 The adapter makes one source Write call per admitted batch and never retries,
 replays, or promises rollback. If the frontend deadline expires after COM has
 started, the source outcome is unknown.
@@ -75,11 +76,16 @@ exception: a scalar names it through the sibling `valueEncoding` field, which an
 element does not have, so inside an array it is spelled in place as `"NaN"`,
 `"+Infinity"` or `"-Infinity"` where a number would go.
 
-A Write supplies the same object, with `dataType` naming the array type
-(`"VT_I4|VT_ARRAY"`) and `valueEncoding: "array"`. `elementDataType` may be
-given as a symbolic name and must then agree with `dataType`; leaving it out is
-not a disagreement. A body whose elements and dimensions do not describe each
-other is refused rather than reshaped.
+A Write can reuse the Read result's `value` object. In the Write item, set
+`dataType` to the symbolic array type (`"VT_I4|VT_ARRAY"`) and `valueEncoding`
+to `"array"`. The optional `elementDataType` accepts the Read object's
+`code` and `name` or a symbolic name such as `"VT_I4"`. When supplied, the
+type must agree with `dataType`. A mismatch returns HTTP 400 `TYPE_MISMATCH`.
+
+Each dimension must specify its integer `lowerBound` (including zero) and
+positive `length`. A missing or null lower bound, a shape that disagrees with
+`elements`, or a null value or element declared as `VT_BSTR` returns HTTP 400
+`INVALID_VALUE` before the adapter calls the source.
 
 [ADR-0019](../../design/adr/0019-safearray-representation.md) records why the shape is
 carried rather than flattened. Array support is **not validated against any

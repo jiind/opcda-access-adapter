@@ -302,9 +302,12 @@ func (session *daThreadSession) browseAddressSpace(request BrowseRequest, limits
 			//
 			// A source may refuse to name a branch. That is its answer, not a
 			// failure, and the branch keeps a path-based identity.
-			if itemID, err := browse.getItemID(name, limits.MaxBSTRCodeUnits, limits.MaxItemIDBytes); err == nil && itemID != "" {
-				branchItemID := itemID
-				entry.ItemID = &branchItemID
+			itemID, err := browse.getItemID(name, limits.MaxBSTRCodeUnits, limits.MaxItemIDBytes)
+			if isConnectionLoss(err) {
+				return BrowseResult{}, err
+			}
+			if err == nil && itemID != "" {
+				entry.ItemID = &itemID
 			}
 			result.Entries = append(result.Entries, entry)
 		}

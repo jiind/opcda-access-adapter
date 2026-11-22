@@ -461,15 +461,14 @@ func decodeSpecialFloat(varType opcda.DAVarType, raw json.RawMessage) (any, erro
 
 // 원문 문자열의 문자와 단일 JSON 값 조건을 검증한다.
 func decodeExactString(raw json.RawMessage) (string, error) {
-	var value ExactString
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	if err := decoder.Decode(&value); err != nil {
+	var value *ExactString
+	if err := json.Unmarshal(raw, &value); err != nil {
 		return "", err
 	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return "", err
+	if value == nil {
+		return "", fmt.Errorf("value must be a JSON string")
 	}
-	return string(value), nil
+	return string(*value), nil
 }
 
 // 숫자 해석 오류를 값 검증 오류로 변환한다.
@@ -489,9 +488,12 @@ func invalidWriteValue(varType opcda.DAVarType) error {
 func decodeWriteArray(varType opcda.DAVarType, raw json.RawMessage) (any, error) {
 	// 1. 원소 타입과 차원 구조를 엄격한 JSON으로 읽는다.
 	var supplied struct {
-		ElementDataType *string              `json:"elementDataType"`
-		Dimensions      []jsonArrayDimension `json:"dimensions"`
-		Elements        []json.RawMessage    `json:"elements"`
+		ElementDataType *json.RawMessage `json:"elementDataType"`
+		Dimensions      []struct {
+			LowerBound *int32 `json:"lowerBound"`
+			Length     uint32 `json:"length"`
+		} `json:"dimensions"`
+		Elements []json.RawMessage `json:"elements"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -506,15 +508,8 @@ func decodeWriteArray(varType opcda.DAVarType, raw json.RawMessage) (any, error)
 
 	elementType := varType.Base()
 	if supplied.ElementDataType != nil {
-		named, err := opcda.ParseDAVarType(*supplied.ElementDataType)
-		if err != nil {
-			return nil, opcda.NewAdapterError(opcda.CodeInvalidValue,
-				"elementDataType must be a known symbolic VARTYPE")
-		}
-		if named != elementType {
-			return nil, opcda.NewAdapterError(opcda.CodeTypeMismatch,
-				fmt.Sprintf("elementDataType %s does not match the declared %s",
-					named, varType))
+		if err := validateArrayElementType(*supplied.ElementDataType, elementType); err != nil {
+			return nil, err
 		}
 	}
 
@@ -525,8 +520,12 @@ func decodeWriteArray(varType opcda.DAVarType, raw json.RawMessage) (any, error)
 		Elements:    make([]any, len(supplied.Elements)),
 	}
 	for index, dimension := range supplied.Dimensions {
+		if dimension.LowerBound == nil {
+			return nil, opcda.NewAdapterError(opcda.CodeInvalidValue,
+				fmt.Sprintf("array dimension %d requires an integer lowerBound", index))
+		}
 		array.Dimensions[index] = opcda.DADimension{
-			LowerBound: dimension.LowerBound,
+			LowerBound: *dimension.LowerBound,
 			Length:     dimension.Length,
 		}
 	}
@@ -541,6 +540,33 @@ func decodeWriteArray(varType opcda.DAVarType, raw json.RawMessage) (any, error)
 		return nil, err
 	}
 	return array, nil
+}
+
+// validateArrayElementType accepts the metadata emitted by Read and the symbolic
+// type accepted by earlier Write clients.
+func validateArrayElementType(raw json.RawMessage, expected opcda.DAVarType) error {
+	var name string
+	var code *uint16
+	if raw[0] == '{' {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil || len(fields) != 2 ||
+			json.Unmarshal(fields["code"], &code) != nil || code == nil ||
+			json.Unmarshal(fields["name"], &name) != nil {
+			return opcda.NewAdapterError(opcda.CodeInvalidValue,
+				"elementDataType object must contain code and name")
+		}
+	} else if err := json.Unmarshal(raw, &name); err != nil {
+		return opcda.NewAdapterError(opcda.CodeInvalidValue,
+			"elementDataType must be a symbolic VARTYPE or an object carrying code and name")
+	}
+	named, err := opcda.ParseDAVarType(name)
+	if err != nil {
+		return opcda.NewAdapterError(opcda.CodeInvalidValue, "elementDataType name must be a known symbolic VARTYPE")
+	}
+	if named != expected || (code != nil && *code != uint16(expected)) {
+		return opcda.NewAdapterError(opcda.CodeTypeMismatch, "elementDataType does not match the declared dataType")
+	}
+	return nil
 }
 
 // 배열 원소를 스칼라와 같은 타입 규칙으로 해석한다.

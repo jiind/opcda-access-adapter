@@ -455,6 +455,21 @@ func verifyDisconnectInvalidation(ctx context.Context, runtime opcda.Runtime, up
 	if !ok || adapterErr.Code != opcda.CodeSubscriptionNotFound {
 		return fmt.Errorf("a subscription from the previous generation survived reconnect: %v", err)
 	}
+	staleReplacement, err := runtime.Subscribe(ctx, opcda.SubscribeRequest{
+		Items:                        probeItems,
+		RequestedUpdateRate:          updateRate,
+		RequiredConnectionGeneration: before.ConnectionGeneration,
+	})
+	if err == nil {
+		_ = runtime.Unsubscribe(ctx, staleReplacement.Info().ID)
+		return errors.New("a group replacement from the previous generation was accepted")
+	}
+	if err := requireInvalidated(err); err != nil {
+		return fmt.Errorf("reject stale group replacement: %w", err)
+	}
+	if count := runtime.Status(ctx).SubscriptionCount; count != 0 {
+		return fmt.Errorf("stale group replacement left %d subscriptions, want 0", count)
+	}
 
 	// Resubscribing must be explicit and must produce a new generation-scoped
 	// identity rather than resuming the old one.
@@ -477,7 +492,7 @@ func verifyDisconnectInvalidation(ctx context.Context, runtime opcda.Runtime, up
 		return fmt.Errorf("final Unsubscribe: %w", err)
 	}
 	fmt.Printf(
-		"disconnect invalidation verified oldId=%s oldGeneration=%d newId=%s newGeneration=%d\n",
+		"disconnect invalidation verified staleReplacementRejected=true oldId=%s oldGeneration=%d newId=%s newGeneration=%d\n",
 		before.ID, before.ConnectionGeneration, afterInfo.ID, afterInfo.ConnectionGeneration,
 	)
 	return nil

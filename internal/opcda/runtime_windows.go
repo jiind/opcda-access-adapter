@@ -618,6 +618,10 @@ func (r *windowsRuntime) Subscribe(ctx context.Context, request SubscribeRequest
 				failures <- NewAdapterError(CodeRuntimeUnavailable, "OPC DA runtime is not connected")
 				return
 			}
+			if required := request.RequiredConnectionGeneration; required != 0 && required != session.generation {
+				failures <- NewAdapterError(CodeSubscriptionInvalidated, "OPC DA connection generation changed before Subscribe")
+				return
+			}
 			if session.subscribeCapability != "supported" {
 				if session.subscribeCapability == "unsupported" {
 					failures <- NewAdapterError(CodeSubscribeUnsupported, "OPC DA server does not support callback subscriptions")

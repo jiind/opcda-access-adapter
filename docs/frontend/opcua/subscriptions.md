@@ -149,19 +149,26 @@ Bad_NotReadable or Bad_UserAccessDenied shall be returned in the Publish
 response." Table 65 agrees by omission — `Bad_NotReadable` is not among the
 operation level result codes CreateMonitoredItems may return.
 
-So a DA item whose access rights carry no read bit is created, and its status
-arrives through Publish. The status is reported once: a monitored item reports
-changes, and this one has nothing further to say. The item stays out of the DA
-group, because there is nothing for the group to read and a source that refuses
-`AddItems` for it would fail the whole rebuild, taking every readable item in the
-same request down with it.
+A monitor for an item with denied read access is created, and Publish reports
+`Bad_NotReadable` once. The adapter can detect the denial from known access
+rights, `OPC_E_BADRIGHTS` from `AddItems`, or the rights returned by `AddItems`.
+Items with known read denial are excluded from subsequent DA group creation.
 
-The rest of the clause is a departure. "If the access rights change to read
-rights, the Server shall start sending data for the MonitoredItem" — this adapter
-will not notice. It learns an item's access rights once, from the browse entry or
-the first read that reports them, and does not revise them afterwards, so an item
-that becomes readable stays silent until the client creates it again. Noticing
-would mean re-reading rights on a schedule the source never agreed to.
+The adapter uses the rights known when it creates the monitor. A monitor
+marked unreadable retains that state for its lifetime. Sampling continues to
+use DA registration and callbacks without periodic rights queries.
+
+### DA registration results are returned per monitored item
+
+`CreateMonitoredItems` returns results in request order. A DA registration
+failure maps to the corresponding UA status, with no monitored item ID for
+the failed result. For example, `OPC_E_UNKNOWNITEMID` maps to
+`Bad_NodeIdUnknown` and `OPC_E_INVALIDITEMID` maps to `Bad_NodeIdInvalid`.
+Other successfully registered items can publish on the same subscription.
+An attempted replacement is released if it cannot retain a readable item
+already active in the current DA group. The current group continues to deliver,
+and the otherwise successful additions return `Bad_OutOfService`.
+[CreateMonitoredItems](https://reference.opcfoundation.org/specs/OPC-10000-4/5.13.2)
 
 ### The sampling interval a monitored item is promised
 

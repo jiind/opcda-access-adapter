@@ -209,7 +209,7 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 		if err := c.subscriptionScenario(ctx, token, session, items); err != nil {
 			return err
 		}
-		if err := c.validatePublishPriority(ctx, token, session, items[0]); err != nil {
+		if err := c.validatePublishPriority(ctx, token, session, items[0], arrayFixture); err != nil {
 			return err
 		}
 		subscribed = true
@@ -483,7 +483,11 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 		subscription.RevisedMaxKeepAliveCount)
 
 	const firstHandle, secondHandle = 4242, 4243
-	created, err := c.createMonitoredItems(token, session, id, target, opcua.TimestampsBoth, firstHandle, firstHandle, secondHandle)
+	created, err := c.createMonitoredItems(token, session, id, opcua.TimestampsBoth,
+		monitoredTarget{node: target, handle: firstHandle},
+		monitoredTarget{node: target, handle: firstHandle},
+		monitoredTarget{node: target, handle: secondHandle},
+	)
 	if err != nil {
 		return err
 	}
@@ -537,7 +541,7 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 	return nil
 }
 
-func (c *client) validatePublishPriority(ctx context.Context, token opcua.ChannelSecurityToken, session, node opcua.NodeID) (err error) {
+func (c *client) validatePublishPriority(ctx context.Context, token opcua.ChannelSecurityToken, session, node opcua.NodeID, fixture bool) (err error) {
 	high, err := c.createSubscription(token, session, 0, 10)
 	if err != nil {
 		return err
@@ -557,12 +561,19 @@ func (c *client) validatePublishPriority(ctx context.Context, token opcua.Channe
 	}
 	defer func() { err = errors.Join(err, c.deleteSubscription(token, session, low.SubscriptionID)) }()
 	const handle = 4244
-	items, err := c.createMonitoredItems(token, session, low.SubscriptionID, node, opcua.TimestampsNeither, handle)
+	targets := []monitoredTarget{{node: node, handle: handle}}
+	if fixture {
+		targets = append(targets, monitoredTarget{node: opcua.ItemNodeID("__opcda_adapter_unknown_item__"), handle: handle + 1})
+	}
+	items, err := c.createMonitoredItems(token, session, low.SubscriptionID, opcua.TimestampsNeither, targets...)
 	if err != nil {
 		return err
 	}
-	if items[0].StatusCode != opcua.StatusGood {
+	if items[0].StatusCode != opcua.StatusGood || items[0].MonitoredItemID == 0 {
 		return fmt.Errorf("create the lower-priority monitor: %s", items[0].StatusCode.Hex())
+	}
+	if fixture && (items[1].StatusCode != opcua.StatusBadNodeIdUnknown || items[1].MonitoredItemID != 0) {
+		return fmt.Errorf("create a monitor for a missing DA item: %s id=%d", items[1].StatusCode.Hex(), items[1].MonitoredItemID)
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -583,6 +594,9 @@ func (c *client) validatePublishPriority(ctx context.Context, token opcua.Channe
 			return fmt.Errorf("Publish returned unexpected data while the higher priority subscription was idle")
 		}
 		fmt.Print("OPCUA_REAL_DA_PUBLISH_PRIORITY_PASS idleHigh=true lowData=true valuesLogged=false\n")
+		if fixture {
+			fmt.Print("OPCUA_REAL_DA_MONITORED_ITEM_REGISTRATION_PASS validPublished=true unknownRejected=true valuesLogged=false\n")
+		}
 		return nil
 	}
 	return fmt.Errorf("the lower-priority subscription did not receive its initial DA value")
@@ -616,18 +630,23 @@ func (c *client) createSubscription(token opcua.ChannelSecurityToken, session op
 	return decoder.ReadCreateSubscriptionResponse()
 }
 
-func (c *client) createMonitoredItems(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, node opcua.NodeID, timestamps opcua.TimestampsToReturn, handles ...uint32) ([]opcua.MonitoredItemCreateResult, error) {
+type monitoredTarget struct {
+	node   opcua.NodeID
+	handle uint32
+}
+
+func (c *client) createMonitoredItems(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, timestamps opcua.TimestampsToReturn, targets ...monitoredTarget) ([]opcua.MonitoredItemCreateResult, error) {
 	encoder, err := opcua.NewEncoder(c.limits)
 	if err != nil {
 		return nil, err
 	}
-	items := make([]opcua.MonitoredItemCreateRequest, len(handles))
-	for index, handle := range handles {
+	items := make([]opcua.MonitoredItemCreateRequest, len(targets))
+	for index, target := range targets {
 		items[index] = opcua.MonitoredItemCreateRequest{
-			ItemToMonitor:  opcua.ReadValueID{NodeID: node, AttributeID: opcua.AttributeValue},
+			ItemToMonitor:  opcua.ReadValueID{NodeID: target.node, AttributeID: opcua.AttributeValue},
 			MonitoringMode: opcua.MonitoringModeReporting,
 			RequestedParameters: opcua.MonitoringParameters{
-				ClientHandle: handle, SamplingInterval: 250, QueueSize: 1,
+				ClientHandle: target.handle, SamplingInterval: 250, QueueSize: 1,
 				Filter: opcua.NullExtensionObject(),
 			},
 		}

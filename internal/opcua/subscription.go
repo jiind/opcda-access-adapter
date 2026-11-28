@@ -1131,7 +1131,6 @@ func (s *SubscriptionService) CreateMonitoredItems(ctx context.Context, sessionT
 
 	results := make([]MonitoredItemCreateResult, len(request.ItemsToCreate))
 	created := make([]*monitoredItem, len(request.ItemsToCreate))
-	accepted := make([]*monitoredItem, 0, len(request.ItemsToCreate))
 	for index, create := range request.ItemsToCreate {
 		result, item := s.prepareMonitoredItem(subscription, create, request.TimestampsToReturn)
 		results[index] = result
@@ -1140,47 +1139,103 @@ func (s *SubscriptionService) CreateMonitoredItems(ctx context.Context, sessionT
 			// Later entries in this request must see handles already accepted.
 			subscription.items[item.id] = item
 			subscription.byHandle[item.clientHandle] = item
-			accepted = append(accepted, item)
 		}
-	}
-	if len(accepted) == 0 {
-		return s.monitoredItemsResponse(request, results, now), nil
 	}
 
-	rebuildErr := s.rebuildDASubscription(ctx, subscription)
-	if rebuildErr == nil {
-		// Now that the group exists the source has revised its update rate.
-		// That rate is a floor: the group cannot sample faster than it, so no
-		// item can be given anything quicker no matter what it asked for. An
-		// item that asked for something slower keeps its own interval and is
-		// paced to it.
-		revised := subscription.daRevisedInterval()
-		for index, item := range created {
-			if item == nil || results[index].StatusCode != StatusGood {
-				continue
-			}
-			if item.samplingInterval < revised {
-				item.samplingInterval = revised
-			}
-			results[index].RevisedSamplingInterval = item.samplingInterval
-		}
-	}
-	if err := rebuildErr; err != nil {
-		// The DA source refused, so nothing was created: the items are removed
-		// and every accepted result carries the source's status.
+	if err := s.registerMonitoredItems(ctx, subscription, created, results); err != nil {
 		status := statusForRuntimeError(err)
-		for _, item := range accepted {
-			delete(subscription.items, item.id)
-			delete(subscription.byHandle, item.clientHandle)
-		}
-		for index := range results {
-			if results[index].StatusCode == StatusGood {
-				results[index] = MonitoredItemCreateResult{StatusCode: status, FilterResult: NullExtensionObject()}
+		for index, item := range created {
+			if item != nil {
+				results[index] = rejectMonitoredItem(subscription, item, status)
 			}
 		}
 		s.releaseInvalidatedDASubscription(ctx, subscription, now)
+		return s.monitoredItemsResponse(request, results, now), nil
+	}
+
+	// The source's revised group rate sets the minimum sampling interval.
+	revised := subscription.daRevisedInterval()
+	for index, item := range created {
+		if item != nil && results[index].StatusCode == StatusGood {
+			item.samplingInterval = max(item.samplingInterval, revised)
+			results[index].RevisedSamplingInterval = item.samplingInterval
+		}
 	}
 	return s.monitoredItemsResponse(request, results, now), nil
+}
+
+func rejectMonitoredItem(subscription *uaSubscription, item *monitoredItem, status StatusCode) MonitoredItemCreateResult {
+	delete(subscription.items, item.id)
+	delete(subscription.byHandle, item.clientHandle)
+	return MonitoredItemCreateResult{StatusCode: status, FilterResult: NullExtensionObject()}
+}
+
+// registerMonitoredItems uses DA AddItems outcomes to finish each prepared
+// monitored item and selects a group that covers the active items.
+func (s *SubscriptionService) registerMonitoredItems(ctx context.Context, subscription *uaSubscription, created []*monitoredItem, results []MonitoredItemCreateResult) error {
+	if !slices.ContainsFunc(created, func(item *monitoredItem) bool { return item != nil && !item.notReadable }) {
+		return nil
+	}
+	group, err := s.openDASubscription(ctx, subscription)
+	if err != nil {
+		return err
+	}
+	info := group.Info()
+	byItemID := make(map[opcda.DAItemID]opcda.SubscriptionItemStatus, len(info.Items))
+	for _, item := range info.Items {
+		byItemID[item.ItemID] = item
+	}
+
+	canReplace := true
+	if subscription.da != nil {
+		for _, current := range subscription.da.Info().Items {
+			if statusForDARegistration(current) == StatusGood && statusForDARegistration(byItemID[current.ItemID]) != StatusGood {
+				canReplace = false
+				break
+			}
+		}
+	}
+
+	addedActiveItem := false
+	for index, item := range created {
+		if item == nil || item.notReadable {
+			continue
+		}
+		status := statusForDARegistration(byItemID[item.itemID])
+		switch status {
+		case StatusBadNotReadable:
+			// Part 4 reports denied reads through Publish after creation.
+			item.notReadable = true
+			continue
+		case StatusGood:
+			if canReplace {
+				addedActiveItem = true
+				continue
+			}
+			status = StatusBadOutOfService
+		}
+		results[index] = rejectMonitoredItem(subscription, item, status)
+	}
+	if addedActiveItem {
+		s.releaseDASubscription(ctx, subscription)
+		subscription.da = group
+	} else {
+		s.releaseDAGroup(ctx, group)
+	}
+	return nil
+}
+
+func statusForDARegistration(item opcda.SubscriptionItemStatus) StatusCode {
+	if item.HRESULTPresent && item.HRESULT.Failed() {
+		return StatusCodeForReadError(item.HRESULT)
+	}
+	if !item.Active {
+		return StatusBadUnexpectedError
+	}
+	if item.AccessRights != nil && !item.AccessRights.Read {
+		return StatusBadNotReadable
+	}
+	return StatusGood
 }
 
 func (s *SubscriptionService) monitoredItemsResponse(request CreateMonitoredItemsRequest, results []MonitoredItemCreateResult, now time.Time) CreateMonitoredItemsResponse {
@@ -1331,9 +1386,9 @@ func requestedSamplingInterval(subscription *uaSubscription, node *Node, request
 	return interval
 }
 
-// rebuildDASubscription replaces a live group on the same DA connection or
-// creates the first group for an explicit monitored item request.
-func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscription *uaSubscription) error {
+// openDASubscription creates a group for the readable items. The caller
+// chooses when to attach it and release the current group.
+func (s *SubscriptionService) openDASubscription(ctx context.Context, subscription *uaSubscription) (opcda.Subscription, error) {
 	itemIDs := make([]opcda.DAItemID, 0, len(subscription.items))
 	seen := make(map[opcda.DAItemID]struct{}, len(subscription.items))
 	for _, item := range subscription.items {
@@ -1352,8 +1407,7 @@ func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscri
 		itemIDs = append(itemIDs, item.itemID)
 	}
 	if len(itemIDs) == 0 {
-		s.releaseDASubscription(ctx, subscription)
-		return nil
+		return nil, nil
 	}
 
 	createCtx, cancel := context.WithTimeout(ctx, s.limits.RequestTimeout)
@@ -1363,12 +1417,16 @@ func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscri
 	if subscription.da != nil {
 		generation = subscription.da.Info().ConnectionGeneration
 	}
-	created, err := s.runtime.Subscribe(createCtx, opcda.SubscribeRequest{
+	return s.runtime.Subscribe(createCtx, opcda.SubscribeRequest{
 		Items:                        itemIDs,
 		RequestedUpdateRate:          updateRate,
 		Deadband:                     subscription.deadband,
 		RequiredConnectionGeneration: generation,
 	})
+}
+
+func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscription *uaSubscription) error {
+	created, err := s.openDASubscription(ctx, subscription)
 	if err != nil {
 		return err
 	}
@@ -1378,13 +1436,17 @@ func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscri
 }
 
 func (s *SubscriptionService) releaseDASubscription(ctx context.Context, subscription *uaSubscription) {
-	if subscription.da == nil {
+	s.releaseDAGroup(ctx, subscription.da)
+	subscription.da = nil
+}
+
+func (s *SubscriptionService) releaseDAGroup(ctx context.Context, group opcda.Subscription) {
+	if group == nil {
 		return
 	}
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.limits.RequestTimeout)
 	defer cancel()
-	_ = s.runtime.Unsubscribe(releaseCtx, subscription.da.Info().ID)
-	subscription.da = nil
+	_ = s.runtime.Unsubscribe(releaseCtx, group.Info().ID)
 }
 
 func (s *SubscriptionService) releaseInvalidatedDASubscription(ctx context.Context, subscription *uaSubscription, now time.Time) bool {

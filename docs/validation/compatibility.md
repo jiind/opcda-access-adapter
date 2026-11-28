@@ -325,6 +325,34 @@ SHA-256 `c71d727637a2215f6aeeba336ee6d4601f3b4d5cf9a8da084be3e1172fc3f04b`.
 Windows denied the `--version` launch and recorded App Control event `3077`
 for that artifact. The temporary executable and staging folder were removed.
 
+### Follow-up: rerun with Smart App Control temporarily disabled
+
+On 2026-11-29 KST, the same laptop reran both previously blocked artifacts
+after verifying their recorded SHA-256 hashes. `2b602343192517918ac54c5c63194987c7f1aa19`
+completed `--version`. `4a7b9af71f0d147fd0e32148dbaf3213ba321955` connected to
+the selected Graybox CLSID over local COM and passed HTTP Browse, valid and
+invalid Device Read, default-disabled Write, and the single loopback listener
+check.
+
+The laptop also tested `main` commit `fd1eeedd8338978dbef9b9ccac602c6c993c0a5e`,
+built with Go 1.26.0. The Windows 386 artifact's SHA-256 was
+`9ded71e4c2123b2950e6e0d8e66c0ee9bbf8eff3660a23940248404262d08585`.
+Both 386 and amd64 completed `--version`. Graybox scenarios used the 386 build.
+
+| Area | Observed result |
+|---|---|
+| HTTP | Browsed 15 branches and 146 leaves. Device Read succeeded for 124 leaves and returned `UNSUPPORTED_VARTYPE` for 22 `VT_DATE` leaves. Ordered partial Read preserved `0xC0040007`. Default-disabled Write, strict type refusal, and same-value `VT_BOOL` Write with readback passed. |
+| gRPC | Exact source status, root and nested Browse, ordered partial Read, item properties, default-disabled Write, strict typing, source denial, and change-driven Subscribe passed. Both changes arrived, the storage value was restored and read back, and 24 subscribe/cancel cycles ended with zero active groups. |
+| OPC UA | Endpoint and session, Browse and BrowseNext release, property nodes, Read, default-disabled and strict typed Write, read-only denial, change-driven Publish, Republish and acknowledgement, publishing disable and resume, monitored-item deletion, and session and channel close passed. The changed storage value was restored and read back. |
+| MCP stdio | All nine tools, exact IDs, property reads, startup diagnostics, 32 group cycles in each Write mode, latest-per-item delivery, `VT_BSTR` restoration, and EOF passed. The process opened zero TCP listeners. |
+| Configuration and services | UTF-8 BOM loading, duplicate field refusal, saved configuration protection and frontend selection passed. Temporary HTTP, gRPC and OPC UA services installed as LocalService, stopped, restarted their configured loopback listener, and uninstalled. MCP service installation was refused. HTTP service activation of Graybox returned `CoCreateInstance(IOPCServer)` with `0x80070005`. |
+
+The first network runner lost the probe exit codes. The corrected runner
+repeated the gRPC and OPC UA cases with successful exit codes. Smart App
+Control was disabled during each test run and restored afterwards. A separate
+read confirmed the enforced `VerifiedAndReputableDesktop` policy and zero
+remaining staging directories, test services, and Event Log sources.
+
 ## Recorded result: OPC Foundation DA 2.05a fixture
 
 - Executed: 2026-08-23 on ephemeral GitHub-hosted Windows Server 2025 VMs.
@@ -478,6 +506,13 @@ two subscriptions. The higher priority subscription sent its initial
 keep-alive. The lower priority subscription then received the initial DA
 value while the higher priority subscription was idle. The probe deleted both
 subscriptions. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46159859931)
+
+PR #257 head `a4b6df5ca3e0da2c7d15ea5e79b9f1534ddd5e32` passed on Windows
+Server 2025 with the same fixture on 386 and amd64. One CreateMonitoredItems
+request included a valid DA item and an unknown ItemID. The unknown item
+returned `Bad_NodeIdUnknown` without a monitored item ID. The valid item's
+notification arrived on the same subscription, which the probe then deleted.
+[Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46162466356)
 
 ### DA error code result
 

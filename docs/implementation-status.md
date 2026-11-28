@@ -64,6 +64,10 @@ executed compatibility claims.
 The real-DA fixture's guided service checks verify both startup records after
 the Application Event Log record ID captured before installation.
 
+OPC UA Publish keeps one unsent notification per monitored item across response
+limits. Deleting an item clears its pending notification. A DA disconnection
+replaces unsent values with `Bad_NotConnected`.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

@@ -434,6 +434,8 @@ func (c *client) itemAttributes(token opcua.ChannelSecurityToken, session opcua.
 	return dataType, level, nil
 }
 
+const sharedMonitorsPublishLimit = 1
+
 // subscriptionScenario verifies that both monitors of the same writable item
 // receive its initial value, each induced change, and the restoration.
 func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, items []opcua.NodeID) (err error) {
@@ -450,7 +452,7 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 		return fmt.Errorf("the subscription target did not return a usable scalar")
 	}
 
-	subscription, err := c.createSubscription(token, session)
+	subscription, err := c.createSubscription(token, session, sharedMonitorsPublishLimit)
 	if err != nil {
 		return err
 	}
@@ -496,8 +498,12 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 	}
 	handles := []uint32{firstHandle, secondHandle}
 
-	if err := c.awaitMonitoredFloat(ctx, token, session, id, original, handles); err != nil {
+	split, err := c.awaitMonitoredFloat(ctx, token, session, id, original, handles)
+	if err != nil {
 		return fmt.Errorf("initial notification: %w", err)
+	}
+	if !split {
+		return fmt.Errorf("the second initial notification was not advertised by MoreNotifications")
 	}
 	defer func() {
 		if restoreErr := c.writeFloat(token, session, target, original); restoreErr != nil {
@@ -505,11 +511,12 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 			return
 		}
 		if err == nil {
-			if verifyErr := c.awaitMonitoredFloat(ctx, token, session, id, original, handles); verifyErr != nil {
+			if _, verifyErr := c.awaitMonitoredFloat(ctx, token, session, id, original, handles); verifyErr != nil {
 				err = fmt.Errorf("restored notification: %w", verifyErr)
 				return
 			}
 			fmt.Print("OPCUA_REAL_DA_SHARED_MONITORS_PASS monitors=2 changes=2 duplicateRejected=true restored=true valuesLogged=false\n")
+			fmt.Print("OPCUA_REAL_DA_PUBLISH_LIMIT_PASS maxNotifications=1 moreNotifications=true valuesLogged=false\n")
 		}
 	}()
 
@@ -520,14 +527,14 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 		if err := c.writeFloat(token, session, target, written); err != nil {
 			return fmt.Errorf("write to induce change %d: %w", index+1, err)
 		}
-		if err := c.awaitMonitoredFloat(ctx, token, session, id, written, handles); err != nil {
+		if _, err := c.awaitMonitoredFloat(ctx, token, session, id, written, handles); err != nil {
 			return fmt.Errorf("change %d was not published: %w", index+1, err)
 		}
 	}
 	return nil
 }
 
-func (c *client) createSubscription(token opcua.ChannelSecurityToken, session opcua.NodeID) (opcua.CreateSubscriptionResponse, error) {
+func (c *client) createSubscription(token opcua.ChannelSecurityToken, session opcua.NodeID, maxNotifications uint32) (opcua.CreateSubscriptionResponse, error) {
 	encoder, err := opcua.NewEncoder(c.limits)
 	if err != nil {
 		return opcua.CreateSubscriptionResponse{}, err
@@ -537,6 +544,7 @@ func (c *client) createSubscription(token opcua.ChannelSecurityToken, session op
 		RequestedPublishingInterval: 250,
 		RequestedMaxKeepAliveCount:  3,
 		RequestedLifetimeCount:      30,
+		MaxNotificationsPerPublish:  maxNotifications,
 		PublishingEnabled:           true,
 	})
 	body, err := encoder.Bytes()
@@ -596,38 +604,44 @@ func (c *client) createMonitoredItems(token opcua.ChannelSecurityToken, session 
 	return response.Results, nil
 }
 
-// awaitMonitoredFloat checks every handle, including when several share the
-// same Publish message. A value from before the write can still be in flight.
-func (c *client) awaitMonitoredFloat(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, expected float32, handles []uint32) error {
+// awaitMonitoredFloat checks every handle with the scenario's Publish limit
+// and reports whether any response advertised more eligible notifications.
+func (c *client) awaitMonitoredFloat(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, expected float32, handles []uint32) (bool, error) {
 	deadline := time.Now().Add(30 * time.Second)
 	matched := make(map[uint32]bool, len(handles))
 	for _, handle := range handles {
 		matched[handle] = false
 	}
 	remaining := len(matched)
+	split := false
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
-			return err
+			return false, err
 		}
 		response, err := c.publish(token, session)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if response.SubscriptionID != subscriptionID {
-			return fmt.Errorf("Publish changed the subscription ID")
+			return false, fmt.Errorf("Publish changed the subscription ID")
 		}
-		for _, notification := range response.NotificationMessage.Notifications {
+		notifications := response.NotificationMessage.Notifications
+		if len(notifications) > sharedMonitorsPublishLimit || (response.MoreNotifications && len(notifications) == 0) {
+			return false, fmt.Errorf("Publish returned %d notifications with MoreNotifications=%t", len(notifications), response.MoreNotifications)
+		}
+		split = split || response.MoreNotifications
+		for _, notification := range notifications {
 			handle := notification.ClientHandle
 			alreadyMatched, known := matched[handle]
 			if !known {
-				return fmt.Errorf("Publish returned unexpected handle %d", handle)
+				return false, fmt.Errorf("Publish returned unexpected handle %d", handle)
 			}
 			if notification.Value.Status.IsBad() {
-				return fmt.Errorf("handle %d carried %s", handle, notification.Value.Status.Hex())
+				return false, fmt.Errorf("handle %d carried %s", handle, notification.Value.Status.Hex())
 			}
 			value, ok := notification.Value.Value.Value.(float32)
 			if !ok || notification.Value.Value.Type != opcua.BuiltInFloat || notification.Value.Value.IsArray {
-				return fmt.Errorf("handle %d did not carry a scalar Float", handle)
+				return false, fmt.Errorf("handle %d did not carry a scalar Float", handle)
 			}
 			if !alreadyMatched && math.Float32bits(value) == math.Float32bits(expected) {
 				matched[handle] = true
@@ -635,15 +649,15 @@ func (c *client) awaitMonitoredFloat(ctx context.Context, token opcua.ChannelSec
 			}
 		}
 		if remaining == 0 {
-			return nil
+			return split, nil
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("%d monitors did not receive the expected Float", remaining)
+	return false, fmt.Errorf("%d monitors did not receive the expected Float", remaining)
 }
 
 func (c *client) publish(token opcua.ChannelSecurityToken, session opcua.NodeID) (opcua.PublishResponse, error) {

@@ -70,6 +70,10 @@ replaces unsent values with `Bad_NotConnected`. The fixture passed with a
 one-notification Publish limit on both architectures.
 [Subscription result](validation/compatibility.md#opc-ua-subscription-result)
 
+The DA thread retains ownership of a new subscription until the caller
+receives it. A request that ends before delivery leaves the group with the
+DA thread for invalidation and release.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

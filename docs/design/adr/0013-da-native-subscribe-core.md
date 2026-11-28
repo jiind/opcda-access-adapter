@@ -108,9 +108,11 @@ its HRESULT and carries no value.
 
 `MaxSubscriptions` (default 16) and `MaxSubscriptionItems` (default 100) are
 added to the existing runtime limits, with aggregate ceilings on the pending
-value and ItemID budgets. `Subscribe` deliberately does not abandon an
-in-flight COM call on a caller deadline: returning early would leave an
-advised DA group with no owner. The existing COM watchdog bounds the call.
+value and ItemID budgets. The caller's deadline can expire while the DA thread
+finishes an in-flight COM call. The DA thread owns any advised group until
+the caller receives it. If the caller's wait ends first, the DA thread
+invalidates the group and releases its COM resources. The watchdog monitors
+the COM call through completion.
 
 The callback object is pinned with `runtime.Pinner` for as long as the server
 can reach it. If a server leaks a reference, the allocation stays pinned

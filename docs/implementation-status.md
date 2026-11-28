@@ -39,6 +39,10 @@ declared VARTYPE. Array dimensions must fit signed 32-bit indices. A
 recognized connection loss during branch ID lookup enters
 the DA runtime's reconnect path.
 
+Batched Read and Write use available DA item registrations in request order.
+A failed registration leaves room for the next unattempted ItemID. Repeated
+ItemIDs share one registration and retain their individual result positions.
+
 OPC UA nodes report the element `DataType` and array `ValueRank` once the
 source provides the canonical VARTYPE. Array Write remains unsupported.
 OPC UA scalar Write preserves the known canonical DA VARTYPE across Browse

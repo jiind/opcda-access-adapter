@@ -22,6 +22,7 @@ on:
       - internal/frontend/mcp/**
       - internal/frontend/dajson/**
       - scripts/mcp/**
+      - internal/validation/fixture/**
       - internal/validation/stabilityprobe/**
       - internal/validation/grpcprobe/**
       - internal/validation/subscribeprobe/**

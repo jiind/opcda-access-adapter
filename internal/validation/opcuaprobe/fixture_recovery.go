@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/jiind/opcda-access-adapter/internal/opcua"
+	"github.com/jiind/opcda-access-adapter/internal/validation/fixture"
 )
 
 func (c *client) validateFixtureRecovery(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, signals string) (err error) {
@@ -56,10 +55,10 @@ func (c *client) validateFixtureRecovery(ctx context.Context, token opcua.Channe
 		(initial.ClientHandle != first && initial.ClientHandle != second) {
 		return fmt.Errorf("initial Publish did not leave one usable notification pending")
 	}
-	if err := signalFixtureController(signals, "subscribed"); err != nil {
+	if err := fixture.Signal(signals, "subscribed"); err != nil {
 		return err
 	}
-	if err := waitFixtureController(ctx, signals, "unavailable"); err != nil {
+	if err := fixture.WaitForSignal(ctx, signals, "unavailable"); err != nil {
 		return err
 	}
 
@@ -98,10 +97,10 @@ func (c *client) validateFixtureRecovery(ctx context.Context, token opcua.Channe
 	if status != opcua.StatusBadNotConnected {
 		return fmt.Errorf("outage Write returned %s", status.Hex())
 	}
-	if err := signalFixtureController(signals, "invalidated"); err != nil {
+	if err := fixture.Signal(signals, "invalidated"); err != nil {
 		return err
 	}
-	if err := waitFixtureController(ctx, signals, "available"); err != nil {
+	if err := fixture.WaitForSignal(ctx, signals, "available"); err != nil {
 		return err
 	}
 
@@ -203,33 +202,4 @@ func (c *client) deleteRecoveryMonitor(token opcua.ChannelSecurityToken, session
 		return fmt.Errorf("delete the invalidated monitor returned %s, %v", response.Header.ServiceResult.Hex(), response.Results)
 	}
 	return nil
-}
-
-func signalFixtureController(directory, name string) error {
-	file, err := os.OpenFile(filepath.Join(directory, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("signal fixture controller %s: %w", name, err)
-	}
-	return file.Close()
-}
-
-func waitFixtureController(ctx context.Context, directory, name string) error {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
-	path := filepath.Join(directory, name)
-	for {
-		if info, err := os.Stat(path); err == nil {
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("fixture controller signal %s is not a file", name)
-			}
-			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("fixture controller did not signal %s: %w", name, ctx.Err())
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
 }

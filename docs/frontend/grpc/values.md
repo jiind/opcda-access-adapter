@@ -59,9 +59,9 @@ A Write supplies the same message, with `data_type` naming the array VARTYPE.
 disagreement. A message whose elements and dimensions do not describe each
 other is refused rather than reshaped.
 
-[ADR-0019](../../design/adr/0019-safearray-representation.md) records why the shape is
-carried rather than flattened. Array support is **not validated against any
-real OPC DA source**; see [implementation status](../../implementation-status.md).
+[ADR-0019](../../design/adr/0019-safearray-representation.md) records the shape
+requirements. The [executed fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips)
+covers zero-based one-dimensional `VT_I4` and `VT_BSTR` arrays.
 
 Source time uses signed Unix seconds and nanoseconds only when
 `timestamp_present` is true. Absence remains absence; the adapter does not

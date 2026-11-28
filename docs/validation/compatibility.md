@@ -4,6 +4,7 @@
 
 | Evidence | Record |
 |---|---|
+| SAFEARRAY round trips against the fixture | [Array result](#recorded-result-safearray-round-trips) |
 | MCP stdio against the fixture | [MCP result](#recorded-result-mcp-stdio-and-opc-foundation-fixture) |
 | Four frontends on the Windows Graybox installation | [2026-11-28 validation](#graybox-four-frontend-validation-on-2026-11-28) |
 | One installed third-party DA server | [Graybox result](#recorded-result-graybox-gray-simulator) |
@@ -25,6 +26,28 @@ cross-builds, and Windows ABI tests are not interoperability results.
 | OPC Foundation OPC Classic Core Components TestServer | source commit `efe0d1d1` | Server 2025 | x86 | 386 | PASS | PASS | PASS | PASS | PASS | PASS | DA 2.05a fixture; [HTTP/reconnect evidence](https://github.com/jiind/opcda-access-adapter/actions/runs/32632091320), [gRPC evidence](https://github.com/jiind/opcda-access-adapter/actions/runs/32752269529), [Subscribe evidence](https://github.com/jiind/opcda-access-adapter/actions/runs/32803232555) |
 | OPC Foundation OPC Classic Core Components TestServer | source commit `efe0d1d1` | Server 2025 | x64 | amd64 | PASS | PASS | PASS | PASS | PASS | PASS | DA 2.05a fixture; [HTTP/reconnect evidence](https://github.com/jiind/opcda-access-adapter/actions/runs/32632091320), [gRPC evidence](https://github.com/jiind/opcda-access-adapter/actions/runs/32752269529), [Subscribe evidence](https://github.com/jiind/opcda-access-adapter/actions/runs/32803232555) |
 | Graybox Software Gray Simulator | file `1.7.9.701`, product `1.7.0.0` | build 10.0.26200.9168 | x86 | 386 | PASS | PASS | PASS | PASS | PASS | PASS | One operator-supplied installation, manual run on 2026-09-16; provenance is not independently established; HTTP, gRPC unary/streaming, DA Subscribe core, and read-only OPC UA exercised |
+
+## Recorded result: SAFEARRAY round trips
+
+The Windows Server 2025 fixture run on 2026-11-28 tested adapter PR #241
+head `bf594da88badfbd034cb6e18e53809b7e4c067a4` against the source-built
+OPC Foundation DA 2.05a TestServer pinned at `efe0d1d1`. The staged fixture
+added zero-based one-dimensional `VT_I4` and `VT_BSTR` arrays. The Windows
+386 and amd64 jobs passed. The first amd64 attempt stopped at the HTTP
+service Event Log check, before the array cases. The rerun passed that
+check and the remaining suite. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46136776873/attempts/2)
+
+| Frontend | Executed cases |
+|---|---|
+| HTTP | Device Read preserved actual and canonical VARTYPE, element type, bounds, dimensions, and order. Typed Write changed both arrays, and a second Read confirmed restoration. |
+| gRPC | Typed device Read preserved actual and canonical VARTYPE, shape, and order. With Write enabled, typed Write changed both arrays and a second Read confirmed restoration. |
+| MCP | Device Read and the initial DA notification preserved actual and canonical VARTYPE, shape, and order. Both groups were explicitly released. With Write enabled, typed Write changed both arrays and a second Read confirmed restoration. |
+| OPC UA | Browse exposed both item NodeIDs. Read returned Int32 and String arrays with the expected element counts and order. Array Write returned `Bad_TypeMismatch` with Write enabled. |
+
+String coverage included Unicode and an empty element during write round
+trips. The probes recorded operation outcomes and metadata. Real-source
+results for other array types, multiple dimensions, nonzero lower bounds,
+and change-driven array notifications remain open.
 
 ## Recorded result: MCP stdio and OPC Foundation fixture
 
@@ -189,8 +212,8 @@ operation results and metadata.
 Graybox provides x86 registration and scalar items in this installation.
 The separate [OPC Foundation fixture run for PR #237](https://github.com/jiind/opcda-access-adapter/actions/runs/45027358487)
 passed its x86 and x64 jobs. The [dedicated Windows VM destructive review](local-vm-destructive.md)
-remains open, including machine permission mutation and reboot. Real-source
-SAFEARRAY coverage remains open.
+remains open, including machine permission mutation and reboot. The array
+result uses the [separate OPC Foundation fixture](#recorded-result-safearray-round-trips).
 
 ### Follow-up: delayed callback release and LocalService
 

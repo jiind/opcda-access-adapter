@@ -44,8 +44,9 @@ Execution is confined to an ephemeral GitHub-hosted Windows VM. The workflow:
 The small staged configuration is derived from the pinned upstream test
 configuration. The String item is marked read-only so the adapter can observe
 a genuine per-item source write denial, and the upstream everyone-access
-registration option is disabled. It is test data, not a production fake
-runtime path.
+registration option is disabled. A separate branch uses the pinned DA 2.05a
+sample's `ArrayOfInt` and `ArrayOfString` encodings to exercise real SAFEARRAY
+operations. The probes restore the array items after Write.
 
 ## Alternatives considered
 

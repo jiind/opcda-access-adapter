@@ -38,18 +38,19 @@ func main() {
 	policyURI := flag.String("security-policy-uri", "", "expected SecurityPolicy URI")
 	writeEnabled := flag.Bool("write-enabled", false,
 		"expect Write to be enabled and drive the subscription change scenario")
+	arrayFixture := flag.Bool("array-fixture", false, "verify the real DA fixture's array items")
 	timeout := flag.Duration("timeout", time.Minute, "bounded scenario deadline")
 	flag.Parse()
 	if flag.NArg() != 0 || *endpointURL == "" || *policyURI == "" ||
 		*timeout <= 0 || *timeout > maximumProbeTimeout {
 		fmt.Fprintln(os.Stderr,
-			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-timeout DURATION]")
+			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-array-fixture] [-timeout DURATION]")
 		os.Exit(2)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled); err != nil {
+	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled, *arrayFixture); err != nil {
 		fmt.Fprintf(os.Stderr, "OPCUA_REAL_DA_FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -89,7 +90,7 @@ type client struct {
 	policyURI string
 }
 
-func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled bool) error {
+func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled, arrayFixture bool) error {
 	deadline, _ := ctx.Deadline()
 	conn, err := dialWhenReady(ctx, address)
 	if err != nil {
@@ -178,6 +179,11 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 	if err := c.readItem(token, session, items[0]); err != nil {
 		return err
 	}
+	if arrayFixture {
+		if err := c.validateFixtureArrays(token, session, items, writeEnabled); err != nil {
+			return err
+		}
+	}
 
 	subscribed := false
 	if writeEnabled {
@@ -194,6 +200,98 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 	fmt.Printf(
 		"OPCUA_REAL_DA_PASS endpoint=verified session=activated items=%d read=ok subscription=%t valuesLogged=false\n",
 		len(items), subscribed)
+	return nil
+}
+
+func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session opcua.NodeID, items []opcua.NodeID, writeEnabled bool) error {
+	intNode := opcua.ItemNodeID("ValidationArrays/Int32")
+	stringNode := opcua.ItemNodeID("ValidationArrays/String")
+	foundInt, foundString := false, false
+	for _, item := range items {
+		foundInt = foundInt || item.Equal(intNode)
+		foundString = foundString || item.Equal(stringNode)
+	}
+	if !foundInt || !foundString {
+		return fmt.Errorf("the UA Browse did not expose both fixture array nodes")
+	}
+	encoder, err := opcua.NewEncoder(c.limits)
+	if err != nil {
+		return err
+	}
+	encoder.WriteReadRequest(opcua.ReadRequest{
+		Header:             requestHeader(session, 56),
+		TimestampsToReturn: opcua.TimestampsNeither,
+		NodesToRead: []opcua.ReadValueID{
+			{NodeID: intNode, AttributeID: opcua.AttributeValue},
+			{NodeID: stringNode, AttributeID: opcua.AttributeValue},
+		},
+	})
+	body, err := encoder.Bytes()
+	if err != nil {
+		return err
+	}
+	identifier, decoder, err := c.call(token, 56, body)
+	if err != nil {
+		return fmt.Errorf("array Read: %w", err)
+	}
+	if identifier != opcua.ReadResponseEncodingID {
+		return fmt.Errorf("array Read answered with service %d", identifier)
+	}
+	header, err := decoder.ReadResponseHeader()
+	if err != nil || header.ServiceResult != opcua.StatusGood {
+		return fmt.Errorf("array Read did not return a successful response header")
+	}
+	if length, isNull, err := decoder.ReadArrayLength(1); err != nil || isNull || length != 2 {
+		return fmt.Errorf("array Read returned the wrong result count")
+	}
+
+	// The server's generic Variant decoder skips received array elements.
+	// Read them here so the probe checks the actual UA wire values and order.
+	if err := readFixtureArrayHeader(decoder, opcua.BuiltInInt32, 3); err != nil {
+		return err
+	}
+	for _, expected := range []int32{2, -7, 31} {
+		if value, err := decoder.ReadInt32(); err != nil || value != expected {
+			return fmt.Errorf("UA Int32 array changed an ordered element")
+		}
+	}
+	if err := readFixtureArrayHeader(decoder, opcua.BuiltInString, 2); err != nil {
+		return err
+	}
+	for _, expected := range []string{"배열", "fixture"} {
+		if value, isNull, err := decoder.ReadString(); err != nil || isNull || value != expected {
+			return fmt.Errorf("UA String array changed an ordered element")
+		}
+	}
+	if length, _, err := decoder.ReadArrayLength(1); err != nil || length != 0 || decoder.Remaining() != 0 {
+		return fmt.Errorf("UA array Read carried unexpected trailing data")
+	}
+	if writeEnabled {
+		status, err := c.writeVariant(token, session, intNode, opcua.Variant{
+			Type: opcua.BuiltInInt32, IsArray: true, Value: []int32{2, -7, 31},
+		})
+		if err != nil {
+			return err
+		}
+		if status != opcua.StatusBadTypeMismatch {
+			return fmt.Errorf("UA array Write returned %s, want Bad_TypeMismatch", status.Hex())
+		}
+	}
+	fmt.Printf("OPCUA_REAL_DA_ARRAY_PASS variants=2 elements=ordered arrayWriteRefused=%t valuesLogged=false\n", writeEnabled)
+	return nil
+}
+
+func readFixtureArrayHeader(decoder *opcua.Decoder, element opcua.BuiltInTypeID, count int) error {
+	// Value bit only in the DataValue, and a one-dimensional Variant array.
+	if mask, err := decoder.ReadByteValue(); err != nil || mask != 0x01 {
+		return fmt.Errorf("UA array did not carry a successful value-only DataValue")
+	}
+	if mask, err := decoder.ReadByteValue(); err != nil || mask != (0x80|byte(element)) {
+		return fmt.Errorf("UA array did not preserve the built-in type and rank")
+	}
+	if length, isNull, err := decoder.ReadArrayLength(1); err != nil || isNull || length != count {
+		return fmt.Errorf("UA array did not preserve its element count")
+	}
 	return nil
 }
 
@@ -462,41 +560,47 @@ func (c *client) publish(token opcua.ChannelSecurityToken, session opcua.NodeID)
 }
 
 func (c *client) writeFloat(token opcua.ChannelSecurityToken, session opcua.NodeID, node opcua.NodeID, value float32) error {
-	encoder, err := opcua.NewEncoder(c.limits)
+	status, err := c.writeVariant(token, session, node, opcua.Variant{Type: opcua.BuiltInFloat, Value: value})
 	if err != nil {
 		return err
+	}
+	if status != opcua.StatusGood {
+		return fmt.Errorf("write returned %s", status.Hex())
+	}
+	return nil
+}
+
+func (c *client) writeVariant(token opcua.ChannelSecurityToken, session opcua.NodeID, node opcua.NodeID, value opcua.Variant) (opcua.StatusCode, error) {
+	encoder, err := opcua.NewEncoder(c.limits)
+	if err != nil {
+		return 0, err
 	}
 	encoder.WriteWriteRequest(opcua.WriteRequest{
 		Header: requestHeader(session, 54),
 		NodesToWrite: []opcua.WriteValue{{
 			NodeID: node, AttributeID: opcua.AttributeValue,
-			Value: opcua.DataValue{
-				Value: opcua.Variant{Type: opcua.BuiltInFloat, Value: value},
-			},
+			Value: opcua.DataValue{Value: value},
 		}},
 	})
 	body, err := encoder.Bytes()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	identifier, decoder, err := c.call(token, 54, body)
 	if err != nil {
-		return fmt.Errorf("write: %w", err)
+		return 0, fmt.Errorf("write: %w", err)
 	}
 	if identifier != opcua.WriteResponseEncodingID {
-		return fmt.Errorf("write answered with service %d", identifier)
+		return 0, fmt.Errorf("write answered with service %d", identifier)
 	}
 	response, err := decoder.ReadWriteResponse()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(response.Results) != 1 {
-		return fmt.Errorf("write returned %d results", len(response.Results))
+		return 0, fmt.Errorf("write returned %d results", len(response.Results))
 	}
-	if response.Results[0] != opcua.StatusGood {
-		return fmt.Errorf("write returned %s", response.Results[0].Hex())
-	}
-	return nil
+	return response.Results[0], nil
 }
 
 func (c *client) deleteSubscription(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32) error {

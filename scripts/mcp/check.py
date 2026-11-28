@@ -77,9 +77,10 @@ class Client:
         return response["result"]
 
     def tool(self, name, arguments, error=False):
-        """도구의 구조화 결과와 호환용 JSON 텍스트가 일치하는지 확인한다."""
+        """두 결과 형식을 비교한다. error가 None이면 성공과 오류를 허용한다."""
         result = self.call("tools/call", {"name": name, "arguments": arguments})
-        assert bool(result.get("isError")) == error, "unexpected MCP tool outcome: " + name
+        if error is not None:
+            assert bool(result.get("isError")) == error, "unexpected MCP tool outcome: " + name
         assert json.loads(result["content"][0]["text"]) == result["structuredContent"], "MCP result representations disagree"
         return result["structuredContent"]
 
@@ -172,7 +173,99 @@ def check_fixture_arrays(client, write_enabled):
     print(f"MCP_REAL_DA_ARRAY_PASS variants=2 initialCallbacks=true writeRoundTrip={enabled} changeNotifications={enabled} valuesLogged=false")
 
 
-def scenario(executable, clsid, real_da, write_enabled):
+def wait_for_status(client, matches, failure):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        status = client.tool("da_status", {})
+        if matches(status):
+            return status
+        time.sleep(0.1)
+    raise AssertionError(failure)
+
+
+def wait_for_signal(directory, name):
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        if (directory / name).is_file():
+            return
+        time.sleep(0.1)
+    raise AssertionError("fixture controller did not signal " + name)
+
+
+def check_fixture_reconnect(client, signals):
+    """실제 DA 연결이 끊어져도 같은 MCP 세션에서 명시적으로 다시 구독한다."""
+    items = {"items": [{"itemId": "Test/Float"}]}
+    options = {**items, "requestedUpdateRateMs": 250}
+    group = client.tool("da_subscribe", options)
+    old_handle = {"subscriptionId": group["subscriptionId"], "waitMs": 5000}
+    before = client.tool("da_subscription_next", old_handle)
+    assert len(before["results"]) == 1 and before["results"][0]["ok"], "initial callback missing before outage"
+    before_status = client.tool("da_status", {})
+    old_generation = before_status["source"]["connectionGeneration"]
+    assert before["connectionGeneration"] == old_generation, "initial callback has wrong generation"
+    assert before_status["runtime"]["subscriptionCount"] == 1, "unexpected pre-outage DA group count"
+
+    # The controller exclusively owns fixture stops and registrations.
+    (signals / "subscribed").touch(exist_ok=False)
+    wait_for_signal(signals, "unavailable")
+    failed_read = client.tool("da_read", items, error=None)
+    if "error" in failed_read:
+        assert "results" not in failed_read, "outage Read returned data with its error"
+    else:
+        rows = failed_read["results"]
+        assert len(rows) == 1 and not rows[0]["ok"] and "value" not in rows[0], "outage Read returned a stale value"
+    wait_for_status(
+        client,
+        lambda state: state["runtimeState"] in {"disconnected", "reconnecting"},
+        "MCP runtime did not report the outage",
+    )
+    invalidated = client.tool("da_subscription_next", old_handle, error=True)
+    assert invalidated["error"]["code"] == "SUBSCRIPTION_INVALIDATED", "old group did not report invalidation"
+    assert "results" not in invalidated, "the invalidated group returned data"
+
+    outage_marker = 17.25 if before["results"][0]["value"] != 17.25 else 18.25
+    refused_write = client.tool("da_write", {"items": [{
+        "itemId": "Test/Float", "dataType": "VT_R4", "valueEncoding": "json", "value": outage_marker,
+    }]}, error=True)
+    assert refused_write["error"]["code"] == "RUNTIME_UNAVAILABLE", "outage Write had an unexpected outcome"
+    (signals / "invalidated").touch(exist_ok=False)
+    wait_for_signal(signals, "available")
+
+    recovered = wait_for_status(
+        client,
+        lambda state: state["runtimeState"] == "connected" and state["source"]["connectionGeneration"] > old_generation,
+        "MCP runtime did not reconnect with a newer generation",
+    )
+    assert recovered["runtime"]["subscriptionCount"] == 0, "reconnect implicitly restored a DA group"
+    assert recovered["runtime"]["reconnectCount"] > before_status["runtime"]["reconnectCount"], (
+        "reconnect counter did not advance"
+    )
+    invalidated = client.tool("da_subscription_next", old_handle, error=True)
+    assert invalidated["error"]["code"] == "SUBSCRIPTION_INVALIDATED", "old handle became live after recovery"
+    read = client.tool("da_read", items)["results"]
+    assert len(read) == 1 and read[0]["ok"], "device Read did not recover"
+    assert read[0]["value"] != outage_marker, "outage Write was replayed"
+
+    resumed = client.tool("da_subscribe", options)
+    new_id = resumed["subscriptionId"]
+    assert new_id != group["subscriptionId"], "explicit recovery reused the old handle"
+    try:
+        retired = client.tool("da_subscription_next", old_handle, error=True)
+        assert retired["error"]["code"] == "SUBSCRIPTION_NOT_FOUND", (
+            "the old handle was retained after explicit resubscribe"
+        )
+        update = client.tool("da_subscription_next", {"subscriptionId": new_id, "waitMs": 5000})
+        assert update["connectionGeneration"] == recovered["source"]["connectionGeneration"], (
+            "resubscribed callback used the wrong generation"
+        )
+        assert len(update["results"]) == 1 and update["results"][0]["ok"], "new group received no callback"
+    finally:
+        client.tool("da_unsubscribe", {"subscriptionId": new_id})
+    assert client.tool("da_status", {})["runtime"]["subscriptionCount"] == 0, "recovery left an active DA group"
+    print("MCP_REAL_DA_RECONNECT_PASS sameSession=true invalidated=true replay=false explicitResubscribe=true active=0 valuesLogged=false")
+
+
+def scenario(executable, clsid, real_da, write_enabled, reconnect_signals=None):
     """실행 파일의 초기화·도구·DA 경로·EOF를 실제 stdio로 검증한다."""
     # 1. 환경변수와 합쳐지지 않는 명시적 단일 소스 설정을 만든다.
     with tempfile.TemporaryDirectory(prefix="opcda-mcp-") as directory:
@@ -197,11 +290,7 @@ def scenario(executable, clsid, real_da, write_enabled):
                 return
 
             # 2. 원본 연결을 기다린 뒤 Browse·부분 Read·속성·DA 구독을 검증한다.
-            deadline = time.monotonic() + 30
-            while state["runtimeState"] != "connected" and time.monotonic() < deadline:
-                time.sleep(0.1)
-                state = client.tool("da_status", {})
-            assert state["runtimeState"] == "connected", "DA source did not connect"
+            wait_for_status(client, lambda status: status["runtimeState"] == "connected", "DA source did not connect")
             root = client.tool("da_browse", {})
             assert any(entry["name"] == "Test" for entry in root["entries"]), "fixture branch missing"
             nested = client.tool("da_browse", {"path": ["Test"]})
@@ -236,6 +325,8 @@ def scenario(executable, clsid, real_da, write_enabled):
                 assert mismatch["results"][0]["errorCode"] == "TYPE_MISMATCH", "strict Write type check missing"
                 written = client.tool("da_write", {"items": [{"itemId": "Test/Float", "dataType": "VT_R4", "valueEncoding": item["valueEncoding"], "value": item["value"]}]})
                 assert written["results"][0]["ok"], "same-value fixture Write failed"
+            if reconnect_signals is not None:
+                check_fixture_reconnect(client, reconnect_signals)
             # 명시적으로 해제하지 않은 그룹은 아래 stdin EOF가 정리해야 한다.
             client.tool("da_subscribe", {"items": [{"itemId": "Test/Int32"}], "requestedUpdateRateMs": 250})
         finally:
@@ -248,10 +339,15 @@ def main():
     parser.add_argument("--adapter", required=True, type=pathlib.Path)
     parser.add_argument("--clsid", default="{AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA}")
     parser.add_argument("--real-da", action="store_true")
+    parser.add_argument("--reconnect-signals", type=pathlib.Path)
     arguments = parser.parse_args()
+    if arguments.reconnect_signals is not None and (
+        not arguments.real_da or not arguments.reconnect_signals.is_dir()
+    ):
+        parser.error("--reconnect-signals requires --real-da and a controller directory")
     scenario(arguments.adapter.resolve(), arguments.clsid, arguments.real_da, False)
     if arguments.real_da:
-        scenario(arguments.adapter.resolve(), arguments.clsid, True, True)
+        scenario(arguments.adapter.resolve(), arguments.clsid, True, True, arguments.reconnect_signals)
     print("MCP_STDIO_PASS tools=9 source=explicit stdout=protocol-only valuesLogged=false realDA=" + str(arguments.real_da).lower())
 
 

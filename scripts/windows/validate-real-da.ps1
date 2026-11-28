@@ -906,21 +906,62 @@ function Test-GuidedSetupWindowsServiceForFrontend {
     }
 }
 
+function Wait-MCPProbeSignal {
+    param([Diagnostics.Process]$Process, [string]$Path, [int]$TimeoutSeconds)
+
+    $name = [IO.Path]::GetFileName($Path)
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            return
+        }
+        if ($Process.HasExited) {
+            throw "MCP probe exited before signaling $name"
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "MCP probe timed out awaiting $name"
+}
+
 # Test-MCPFrontend는 독립 Python 클라이언트로 실제 DA의 MCP stdio 경로를 검증한다.
 function Test-MCPFrontend {
-    # 1. 다른 시나리오가 남긴 fixture 프로세스를 정리한다.
     Stop-ServerProcesses
+    $probe = $null
+    $signals = Join-Path $script:WorkingDirectory 'mcp-reconnect'
+    New-Item -ItemType Directory -Path $signals | Out-Null
+    $stdout = Join-Path $script:WorkingDirectory 'mcp-probe.stdout.log'
+    $stderr = Join-Path $script:WorkingDirectory 'mcp-probe.stderr.log'
     try {
-        # 2. stdout에는 프로토콜만 흐르며 probe는 값 없이 판정만 출력한다.
         $pythonExecutable = (Get-Command python -ErrorAction Stop).Source
         $mcpProbe = Join-Path $PSScriptRoot '../mcp/check.py'
-        Invoke-NativeProcess -FilePath $pythonExecutable -ArgumentList @(
-            $mcpProbe, '--adapter', $script:AdapterExecutable,
-            '--clsid', $expectedCLSID, '--real-da'
-        ) -TimeoutSeconds 180
+        $arguments = @(
+            ('"{0}"' -f $mcpProbe), '--adapter', ('"{0}"' -f $script:AdapterExecutable),
+            '--clsid', $expectedCLSID, '--real-da', '--reconnect-signals', ('"{0}"' -f $signals)
+        )
+        $probe = Start-Process -FilePath $pythonExecutable -ArgumentList $arguments -NoNewWindow -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+        # Keep the MCP stdio session open during the fixture outage.
+        Wait-MCPProbeSignal -Process $probe -Path (Join-Path $signals 'subscribed') -TimeoutSeconds 180
+        Unregister-Server
+        New-Item -ItemType File -Path (Join-Path $signals 'unavailable') | Out-Null
+        Wait-MCPProbeSignal -Process $probe -Path (Join-Path $signals 'invalidated') -TimeoutSeconds 45
+        Register-Server
+        New-Item -ItemType File -Path (Join-Path $signals 'available') | Out-Null
+
+        Assert-True ($probe.WaitForExit(60000)) 'MCP recovery probe timed out'
+        Assert-True ($probe.ExitCode -eq 0) "MCP probe failed with exit code $($probe.ExitCode)"
     }
     finally {
-        # 3. stdin EOF 후 어댑터와 소스가 다음 시나리오에 남지 않게 한다.
+        if ($null -ne $probe -and -not $probe.HasExited) {
+            Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+            $probe.WaitForExit(5000) | Out-Null
+        }
+        foreach ($log in @($stdout, $stderr)) {
+            if (Test-Path -LiteralPath $log -PathType Leaf) {
+                Get-Content -LiteralPath $log | Write-Host
+            }
+        }
         Stop-ServerProcesses
     }
 }

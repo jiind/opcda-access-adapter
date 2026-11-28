@@ -39,6 +39,9 @@ recorded in [ADR-0006](../design/adr/0006-real-da-validation-fixture.md).
   its original value;
 - gRPC unary Status, root/nested Browse, ordered partial Read, default-disabled
   Write, strict typed Write, source-denied Write, and loopback listener bounds;
+- MCP stdio over a fixture outage in one session, including group invalidation,
+  Write refusal, explicit resubscription with a newer generation, and group
+  release;
 - deterministic outage while the server is unregistered, explicit
   unavailable behavior, reconnect count, newer connection generation, and
   lazy re-registration;

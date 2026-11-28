@@ -76,6 +76,10 @@ DA thread for invalidation and release. The fixture passed 24 deadline trials
 per architecture with zero active groups after each trial.
 [Subscribe result](validation/compatibility.md#phase-7-da-subscribe-core-result)
 
+The real-DA MCP check keeps a stdio session open during source loss. It
+requires explicit resubscription after reconnect and checks the old handle,
+the outage Write, and the final group count.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

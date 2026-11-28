@@ -137,8 +137,10 @@ boundary.
 
 OPC UA property discovery refreshes when Read learns a new canonical VARTYPE.
 The DA core, gRPC, and OPC UA require percent deadbands in the numeric range
-from 0 through 100. The staged analog fixture exercises EURange discovery,
-filter refusal, source notification suppression and delivery, and restoration.
+from 0 through 100. The staged analog fixture passed on Windows 386 and amd64
+with EURange discovery, filter refusal, source notification suppression and
+delivery, and restoration.
+[Analog fixture result](validation/compatibility.md#opc-ua-analog-properties-and-percent-deadband)
 
 ## Release blocker and next work
 

@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"sort"
@@ -433,20 +434,38 @@ func (c *client) itemAttributes(token opcua.ChannelSecurityToken, session opcua.
 	return dataType, level, nil
 }
 
-// subscriptionScenario creates a subscription over the writable item, then
-// writes distinct values and requires each one to arrive through Publish.
-func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, items []opcua.NodeID) error {
+// subscriptionScenario verifies that both monitors of the same writable item
+// receive its initial value, each induced change, and the restoration.
+func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, items []opcua.NodeID) (err error) {
 	target, err := c.writableItem(token, session, items)
 	if err != nil {
 		return err
+	}
+	status, initial, err := c.readAttributeValue(token, session, target, opcua.AttributeValue, 59)
+	if err != nil {
+		return err
+	}
+	original, ok := initial.Value.(float32)
+	if status != opcua.StatusGood || initial.Type != opcua.BuiltInFloat || initial.IsArray || !ok {
+		return fmt.Errorf("the subscription target did not return a usable scalar")
 	}
 
 	subscription, err := c.createSubscription(token, session)
 	if err != nil {
 		return err
 	}
-	if subscription.SubscriptionID == 0 || subscription.RevisedPublishingInterval <= 0 {
-		return fmt.Errorf("the server returned an incomplete subscription")
+	id := subscription.SubscriptionID
+	if id == 0 {
+		return fmt.Errorf("the server returned a zero subscription ID")
+	}
+	defer func() {
+		err = errors.Join(err, c.deleteSubscription(token, session, id))
+		if err == nil {
+			fmt.Print("opcua subscription deleted\n")
+		}
+	}()
+	if subscription.RevisedPublishingInterval <= 0 {
+		return fmt.Errorf("the server returned a nonpositive publishing interval")
 	}
 	// Table 82: the lifetime count is at least three times the keep-alive
 	// count.
@@ -455,46 +474,56 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 			subscription.RevisedLifetimeCount, subscription.RevisedMaxKeepAliveCount)
 	}
 	fmt.Printf("opcua subscription created id=%d revisedInterval=%vms keepAlive=%d\n",
-		subscription.SubscriptionID, subscription.RevisedPublishingInterval,
+		id, subscription.RevisedPublishingInterval,
 		subscription.RevisedMaxKeepAliveCount)
 
-	const clientHandle = uint32(4242)
-	created, err := c.createMonitoredItem(token, session, subscription.SubscriptionID, target, clientHandle, opcua.TimestampsBoth)
+	const firstHandle, secondHandle = 4242, 4243
+	created, err := c.createMonitoredItems(token, session, id, target, opcua.TimestampsBoth, firstHandle, firstHandle, secondHandle)
 	if err != nil {
 		return err
 	}
-	if created.StatusCode != opcua.StatusGood {
-		return fmt.Errorf("the monitored item was refused with %s", created.StatusCode.Hex())
+	for index, want := range []opcua.StatusCode{opcua.StatusGood, opcua.StatusBadInvalidArgument, opcua.StatusGood} {
+		result := created[index]
+		if result.StatusCode != want {
+			return fmt.Errorf("monitored item result %d returned %s, want %s", index, result.StatusCode.Hex(), want.Hex())
+		}
+		if want == opcua.StatusGood && (result.MonitoredItemID == 0 || result.RevisedQueueSize != 1) {
+			return fmt.Errorf("monitored item result %d returned an invalid ID or queue size", index)
+		}
 	}
-	// The DA core coalesces per item, so the queue is one value per item.
-	if created.RevisedQueueSize != 1 {
-		return fmt.Errorf("the server revised the queue size to %d", created.RevisedQueueSize)
+	if created[0].MonitoredItemID == created[2].MonitoredItemID {
+		return fmt.Errorf("the two monitored items share an ID")
 	}
-	fmt.Printf("opcua monitored item created id=%d revisedSampling=%vms queue=%d\n",
-		created.MonitoredItemID, created.RevisedSamplingInterval, created.RevisedQueueSize)
+	handles := []uint32{firstHandle, secondHandle}
 
-	// The server's initial snapshot proves the notification path is live.
-	if _, err := c.awaitNotification(ctx, token, session, clientHandle, nil); err != nil {
+	if err := c.awaitMonitoredFloat(ctx, token, session, id, original, handles); err != nil {
 		return fmt.Errorf("initial notification: %w", err)
 	}
+	defer func() {
+		if restoreErr := c.writeFloat(token, session, target, original); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore the subscription target: %w", restoreErr))
+			return
+		}
+		if err == nil {
+			if verifyErr := c.awaitMonitoredFloat(ctx, token, session, id, original, handles); verifyErr != nil {
+				err = fmt.Errorf("restored notification: %w", verifyErr)
+				return
+			}
+			fmt.Print("OPCUA_REAL_DA_SHARED_MONITORS_PASS monitors=2 changes=2 duplicateRejected=true restored=true valuesLogged=false\n")
+		}
+	}()
 
-	const changes = 2
-	for change := 0; change < changes; change++ {
-		written := float32(change+1) + 0.75
+	for index, written := range []float32{1.75, 2.75} {
+		if written == original {
+			written = 3.75
+		}
 		if err := c.writeFloat(token, session, target, written); err != nil {
-			return fmt.Errorf("write to induce change %d: %w", change+1, err)
+			return fmt.Errorf("write to induce change %d: %w", index+1, err)
 		}
-		expected := written
-		if _, err := c.awaitNotification(ctx, token, session, clientHandle, &expected); err != nil {
-			return fmt.Errorf("change %d was not published: %w", change+1, err)
+		if err := c.awaitMonitoredFloat(ctx, token, session, id, written, handles); err != nil {
+			return fmt.Errorf("change %d was not published: %w", index+1, err)
 		}
 	}
-	fmt.Printf("opcua change-driven notifications verified changes=%d\n", changes)
-
-	if err := c.deleteSubscription(token, session, subscription.SubscriptionID); err != nil {
-		return err
-	}
-	fmt.Print("opcua subscription deleted\n")
 	return nil
 }
 
@@ -524,87 +553,97 @@ func (c *client) createSubscription(token opcua.ChannelSecurityToken, session op
 	return decoder.ReadCreateSubscriptionResponse()
 }
 
-func (c *client) createMonitoredItem(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, node opcua.NodeID, handle uint32, timestamps opcua.TimestampsToReturn) (opcua.MonitoredItemCreateResult, error) {
+func (c *client) createMonitoredItems(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, node opcua.NodeID, timestamps opcua.TimestampsToReturn, handles ...uint32) ([]opcua.MonitoredItemCreateResult, error) {
 	encoder, err := opcua.NewEncoder(c.limits)
 	if err != nil {
-		return opcua.MonitoredItemCreateResult{}, err
+		return nil, err
 	}
-	encoder.WriteCreateMonitoredItemsRequest(opcua.CreateMonitoredItemsRequest{
-		Header:             requestHeader(session, 52),
-		SubscriptionID:     subscriptionID,
-		TimestampsToReturn: timestamps,
-		ItemsToCreate: []opcua.MonitoredItemCreateRequest{{
+	items := make([]opcua.MonitoredItemCreateRequest, len(handles))
+	for index, handle := range handles {
+		items[index] = opcua.MonitoredItemCreateRequest{
 			ItemToMonitor:  opcua.ReadValueID{NodeID: node, AttributeID: opcua.AttributeValue},
 			MonitoringMode: opcua.MonitoringModeReporting,
 			RequestedParameters: opcua.MonitoringParameters{
 				ClientHandle: handle, SamplingInterval: 250, QueueSize: 1,
 				Filter: opcua.NullExtensionObject(),
 			},
-		}},
+		}
+	}
+	encoder.WriteCreateMonitoredItemsRequest(opcua.CreateMonitoredItemsRequest{
+		Header:             requestHeader(session, 52),
+		SubscriptionID:     subscriptionID,
+		TimestampsToReturn: timestamps,
+		ItemsToCreate:      items,
 	})
 	body, err := encoder.Bytes()
 	if err != nil {
-		return opcua.MonitoredItemCreateResult{}, err
+		return nil, err
 	}
 	identifier, decoder, err := c.call(token, 52, body)
 	if err != nil {
-		return opcua.MonitoredItemCreateResult{}, fmt.Errorf("create monitored items: %w", err)
+		return nil, fmt.Errorf("create monitored items: %w", err)
 	}
 	if identifier != opcua.CreateMonitoredItemsResponseEncodingID {
-		return opcua.MonitoredItemCreateResult{}, fmt.Errorf("create monitored items answered with service %d", identifier)
+		return nil, fmt.Errorf("create monitored items answered with service %d", identifier)
 	}
 	response, err := decoder.ReadCreateMonitoredItemsResponse()
 	if err != nil {
-		return opcua.MonitoredItemCreateResult{}, err
+		return nil, err
 	}
-	if len(response.Results) != 1 {
-		return opcua.MonitoredItemCreateResult{}, fmt.Errorf("create monitored items returned %d results", len(response.Results))
+	if len(response.Results) != len(items) {
+		return nil, fmt.Errorf("create monitored items returned %d results", len(response.Results))
 	}
-	return response.Results[0], nil
+	return response.Results, nil
 }
 
-// awaitNotification polls Publish until a notification for the handle arrives.
-// Publish does not block on this server, so the client polls; the wait is
-// bounded by the scenario deadline. When expected is supplied the notification
-// must carry that value, which is how a change is told from the snapshot that
-// preceded it.
-func (c *client) awaitNotification(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, handle uint32, expected *float32) (opcua.DataValue, error) {
+// awaitMonitoredFloat checks every handle, including when several share the
+// same Publish message. A value from before the write can still be in flight.
+func (c *client) awaitMonitoredFloat(ctx context.Context, token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, expected float32, handles []uint32) error {
 	deadline := time.Now().Add(30 * time.Second)
-	handleFound := false
+	matched := make(map[uint32]bool, len(handles))
+	for _, handle := range handles {
+		matched[handle] = false
+	}
+	remaining := len(matched)
 	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return opcua.DataValue{}, ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		response, err := c.publish(token, session)
 		if err != nil {
-			return opcua.DataValue{}, err
+			return err
+		}
+		if response.SubscriptionID != subscriptionID {
+			return fmt.Errorf("Publish changed the subscription ID")
 		}
 		for _, notification := range response.NotificationMessage.Notifications {
-			if notification.ClientHandle != handle {
-				continue
+			handle := notification.ClientHandle
+			alreadyMatched, known := matched[handle]
+			if !known {
+				return fmt.Errorf("Publish returned unexpected handle %d", handle)
 			}
-			handleFound = true
 			if notification.Value.Status.IsBad() {
-				return opcua.DataValue{}, fmt.Errorf(
-					"the notification carried %s", notification.Value.Status.Hex())
-			}
-			if expected == nil {
-				return notification.Value, nil
+				return fmt.Errorf("handle %d carried %s", handle, notification.Value.Status.Hex())
 			}
 			value, ok := notification.Value.Value.Value.(float32)
-			if ok && value == *expected {
-				return notification.Value, nil
+			if !ok || notification.Value.Value.Type != opcua.BuiltInFloat || notification.Value.Value.IsArray {
+				return fmt.Errorf("handle %d did not carry a scalar Float", handle)
 			}
-			// An older coalesced value can still be in flight; keep polling.
+			if !alreadyMatched && math.Float32bits(value) == math.Float32bits(expected) {
+				matched[handle] = true
+				remaining--
+			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		if remaining == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
-	if handleFound {
-		return opcua.DataValue{}, fmt.Errorf("the expected value never arrived for handle %d", handle)
-	}
-	return opcua.DataValue{}, fmt.Errorf("no notification arrived for handle %d", handle)
+	return fmt.Errorf("%d monitors did not receive the expected Float", remaining)
 }
 
 func (c *client) publish(token opcua.ChannelSecurityToken, session opcua.NodeID) (opcua.PublishResponse, error) {

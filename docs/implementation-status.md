@@ -53,6 +53,7 @@ and refreshes it when a later Read or notification reports a change.
 | Graybox Gray Simulator 1.7.9.701, x86 | HTTP and gRPC operations and recovery, OPC UA Write and subscriptions, MCP tools and repeated group cleanup, guided setup and Service lifecycle | HTTP LocalService activation received COM access denied. [Executed results](validation/compatibility.md#graybox-four-frontend-validation-on-2026-11-28) |
 | asyncua, open62541, OPC Foundation .NET | UA client behavior over a scripted DA source; all three gated in CI | No DA-side or conformance proof |
 | MCP stdio | Independent Python client against the real fixture on both architectures | Recorded scenarios, not every host or vendor |
+| OPC UA shared ItemID | Two client handles receive initial, changed, and restored values from the same fixture item on both architectures. A repeated handle is refused in the same request | One writable scalar fixture item. [Subscription result](validation/compatibility.md#opc-ua-subscription-result) |
 | SAFEARRAY notifications | gRPC and MCP carry changed and restored Int32 and BSTR arrays. OPC UA Publish carries changed and restored Int32 arrays. Both architectures passed | Zero-based one-dimensional fixture data. [Array results](validation/compatibility.md#recorded-result-safearray-round-trips) |
 | Windows unit and ABI tests | Both architectures, memory layouts, VARIANT/BSTR/SAFEARRAY handling | Unit coverage is not source interoperability |
 

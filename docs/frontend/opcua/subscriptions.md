@@ -245,8 +245,11 @@ doing it here is explicit rather than hidden.
 - **A monitoring filter is refused** with `Bad_FilterNotAllowed`. The DA group's
   percent deadband is the only filtering the source offers, and silently
   ignoring a filter a client asked for would misreport what it receives.
-- **Two items may not share a client handle**, since the handle is what
-  identifies an item in a notification.
+- **Client handles are unique within a subscription.** A repeated handle is
+  refused with `Bad_InvalidArgument`, including within one create request.
+  Separate handles may monitor the same DA ItemID. The DA group contains the
+  ItemID once and each reporting monitored item receives the sample on its own
+  interval.
 
 ### Publish
 

@@ -2,6 +2,7 @@ package opcua
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,7 @@ func TestPercentDeadbandAcceptsItsWholeRange(t *testing.T) {
 		{"one hundred percent", 100, StatusGood},
 		{"just over one hundred", 100.0001, StatusBadDeadbandFilterInvalid},
 		{"negative", -0.0001, StatusBadDeadbandFilterInvalid},
+		{"NaN", math.NaN(), StatusBadDeadbandFilterInvalid},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			filter := dataChangeFilter(t, DataChangeTriggerStatusValue, DeadbandPercent, testCase.value)

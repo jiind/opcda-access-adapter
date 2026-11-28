@@ -44,6 +44,10 @@ recorded in [ADR-0006](../design/adr/0006-real-da-validation-fixture.md).
 - MCP stdio over a fixture outage in one session, including group invalidation,
   Write refusal, explicit resubscription with a newer generation, and group
   release;
+- OPC UA analog item EURange after Browse, device Read, and a second Browse.
+  OPC UA percent deadband with an accepted below-threshold Write and no
+  corresponding notification, an above-threshold notification, refusal of
+  non-analog and NaN filter requests, and value restoration and group release;
 - OPC UA over a fixture outage in one session, including replacement of an
   unsent value by `Bad_NotConnected`, Write refusal without replay, and
   delivery after explicit monitor creation;

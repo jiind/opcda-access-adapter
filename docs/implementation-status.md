@@ -135,6 +135,11 @@ negotiated duration for idle expiry. Regression tests cover oversized
 requests, positive fractional timeout bounds, and expiry at the negotiated
 boundary.
 
+OPC UA property discovery refreshes when Read learns a new canonical VARTYPE.
+The DA core, gRPC, and OPC UA require percent deadbands in the numeric range
+from 0 through 100. The staged analog fixture exercises EURange discovery,
+filter refusal, source notification suppression and delivery, and restoration.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

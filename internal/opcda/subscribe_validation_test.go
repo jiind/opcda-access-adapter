@@ -1,6 +1,7 @@
 package opcda
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,7 @@ func TestSubscribeAcceptsTheWholeRangeOfItsParameters(t *testing.T) {
 		{"a full deadband", func(r *SubscribeRequest) { r.Deadband = 100 }, true},
 		{"just past a full deadband", func(r *SubscribeRequest) { r.Deadband = 100.0001 }, false},
 		{"a negative deadband", func(r *SubscribeRequest) { r.Deadband = -0.0001 }, false},
+		{"a NaN deadband", func(r *SubscribeRequest) { r.Deadband = float32(math.NaN()) }, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			request := validSubscribe()

@@ -328,6 +328,7 @@ function Test-OPCUAFrontend {
             '-security-policy-uri', 'urn:validation:security-policy:none',
             '-write-enabled',
             '-array-fixture',
+            '-analog-fixture',
             '-array-writer-url', $script:BaseURL,
             '-reconnect-signals', ('"{0}"' -f $signals),
             # The subscription scenario waits on real source notifications, so

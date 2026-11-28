@@ -53,6 +53,12 @@ func (limits PopulationLimits) validate() error {
 
 func (limits PopulationLimits) ValidateForConfiguration() error { return limits.validate() }
 
+type populationRecord struct {
+	at time.Time
+	// A property's mapping can change once Read learns the item's type.
+	itemType *opcda.DAVarType
+}
+
 // Populator fills the address space from DA Browse on demand.
 type Populator struct {
 	space   *AddressSpace
@@ -60,7 +66,7 @@ type Populator struct {
 	limits  PopulationLimits
 
 	mu       sync.Mutex
-	browsed  map[string]time.Time
+	browsed  map[string]populationRecord
 	inflight map[string]chan struct{}
 }
 
@@ -75,7 +81,7 @@ func NewPopulator(space *AddressSpace, runtime opcda.Runtime, limits PopulationL
 		space:    space,
 		runtime:  runtime,
 		limits:   limits,
-		browsed:  make(map[string]time.Time),
+		browsed:  make(map[string]populationRecord),
 		inflight: make(map[string]chan struct{}),
 	}, nil
 }
@@ -107,7 +113,7 @@ func (p *Populator) EnsureBranch(ctx context.Context, path []string, now time.Ti
 	key := pathKey(path)
 
 	p.mu.Lock()
-	if browsedAt, ok := p.browsed[key]; ok && now.Sub(browsedAt) < p.limits.RefreshInterval {
+	if browsedAt, ok := p.browsed[key]; ok && now.Sub(browsedAt.at) < p.limits.RefreshInterval {
 		p.mu.Unlock()
 		return nil
 	}
@@ -125,7 +131,7 @@ func (p *Populator) EnsureBranch(ctx context.Context, path []string, now time.Ti
 		p.mu.Lock()
 		browsedAt, ok := p.browsed[key]
 		p.mu.Unlock()
-		if ok && now.Sub(browsedAt) < p.limits.RefreshInterval {
+		if ok && now.Sub(browsedAt.at) < p.limits.RefreshInterval {
 			return nil
 		}
 		return uacpError(StatusBadNotConnected, "a concurrent browse of this branch did not succeed")
@@ -164,7 +170,7 @@ func (p *Populator) browse(ctx context.Context, path []string, key string, now t
 	}
 
 	p.mu.Lock()
-	p.browsed[key] = now
+	p.browsed[key] = populationRecord{at: now}
 	p.mu.Unlock()
 	return nil
 }
@@ -213,7 +219,7 @@ func splitBranchPath(encoded string) []string {
 func (p *Populator) Invalidate() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.browsed = make(map[string]time.Time)
+	p.browsed = make(map[string]populationRecord)
 }
 
 // BrowsedBranchCount reports how many branches are cached, for diagnostics.
@@ -237,37 +243,52 @@ func itemPropertiesKey(itemID opcda.DAItemID) string { return "properties\x1f" +
 func (p *Populator) EnsureItemProperties(ctx context.Context, itemID opcda.DAItemID, now time.Time) error {
 	key := itemPropertiesKey(itemID)
 
-	p.mu.Lock()
-	if discoveredAt, ok := p.browsed[key]; ok && now.Sub(discoveredAt) < p.limits.RefreshInterval {
-		p.mu.Unlock()
-		return nil
-	}
-	if waiting, running := p.inflight[key]; running {
-		p.mu.Unlock()
-		select {
-		case <-waiting:
-		case <-ctx.Done():
-			return uacpError(StatusBadTimeout, "waiting for a concurrent property discovery was cancelled")
-		}
+	for {
+		itemType := p.itemCanonicalType(itemID)
 		p.mu.Lock()
-		discoveredAt, ok := p.browsed[key]
-		p.mu.Unlock()
-		if ok && now.Sub(discoveredAt) < p.limits.RefreshInterval {
+		if record, ok := p.browsed[key]; ok && now.Sub(record.at) < p.limits.RefreshInterval &&
+			sameCanonicalType(record.itemType, itemType) {
+			p.mu.Unlock()
 			return nil
 		}
-		return uacpError(StatusBadNotConnected, "a concurrent property discovery did not succeed")
+		if waiting, running := p.inflight[key]; running {
+			p.mu.Unlock()
+			select {
+			case <-waiting:
+			case <-ctx.Done():
+				return uacpError(StatusBadTimeout, "waiting for a concurrent property discovery was cancelled")
+			}
+			p.mu.Lock()
+			record, ok := p.browsed[key]
+			p.mu.Unlock()
+			if !ok || now.Sub(record.at) >= p.limits.RefreshInterval {
+				return uacpError(StatusBadNotConnected, "a concurrent property discovery did not succeed")
+			}
+			continue
+		}
+
+		done := make(chan struct{})
+		p.inflight[key] = done
+		p.mu.Unlock()
+
+		err := p.discoverItemProperties(ctx, itemID, key, now)
+		p.mu.Lock()
+		delete(p.inflight, key)
+		p.mu.Unlock()
+		close(done)
+		return err
 	}
+}
 
-	done := make(chan struct{})
-	p.inflight[key] = done
-	p.mu.Unlock()
+func (p *Populator) itemCanonicalType(itemID opcda.DAItemID) *opcda.DAVarType {
+	if node, ok := p.space.Node(ItemNodeID(itemID)); ok {
+		return node.canonicalType
+	}
+	return nil
+}
 
-	err := p.discoverItemProperties(ctx, itemID, key, now)
-	p.mu.Lock()
-	delete(p.inflight, key)
-	p.mu.Unlock()
-	close(done)
-	return err
+func sameCanonicalType(a, b *opcda.DAVarType) bool {
+	return a == b || (a != nil && b != nil && *a == *b)
 }
 
 func (p *Populator) discoverItemProperties(ctx context.Context, itemID opcda.DAItemID, key string, now time.Time) error {
@@ -279,8 +300,9 @@ func (p *Populator) discoverItemProperties(ctx context.Context, itemID opcda.DAI
 		if adapterErr, ok := opcda.AsAdapterError(err); ok && adapterErr.Code == opcda.CodePropertiesUnsupported {
 			// The source offers no properties. Recording the answer stops the
 			// adapter asking again for every browse of every item.
+			itemType := p.itemCanonicalType(itemID)
 			p.mu.Lock()
-			p.browsed[key] = now
+			p.browsed[key] = populationRecord{at: now, itemType: itemType}
 			p.mu.Unlock()
 			return nil
 		}
@@ -303,13 +325,14 @@ func (p *Populator) discoverItemProperties(ctx context.Context, itemID opcda.DAI
 	if len(wanted) > 0 {
 		euType = p.readItemFacts(ctx, itemID, wanted)
 	}
-	if err := p.space.AttachItemProperties(itemID, available, euType, p.limits.MaxNodes); err != nil {
+	itemType, err := p.space.attachItemProperties(itemID, available, euType, p.limits.MaxNodes)
+	if err != nil {
 		// The discovery is not recorded, so the next browse tries again rather
 		// than serving whatever partial answer a truncation would have left.
 		return uacpError(StatusBadTooManyOperations, "%s", err.Error())
 	}
 	p.mu.Lock()
-	p.browsed[key] = now
+	p.browsed[key] = populationRecord{at: now, itemType: itemType}
 	p.mu.Unlock()
 	return nil
 }

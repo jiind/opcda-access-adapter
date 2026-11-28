@@ -179,7 +179,23 @@ $arrayFixture = @'
     </Children>
   </BrowseElement>
 '@
-$configText = $configText.Replace($serverClosingTag, "$arrayFixture`r`n$serverClosingTag")
+# The pinned sample defines analog items with EU Type, High EU, and Low EU.
+$analogFixture = @'
+  <BrowseElement ElementName="ValidationAnalog">
+    <Children>
+      <BrowseElement ElementName="Float">
+        <Item>
+          <Value xsi:type="xsd:float">25</Value>
+          <Property PropertyID="6" xsi:type="xsd:float">100</Property>
+          <Property PropertyID="7" xsi:type="xsd:int">1</Property>
+          <Property PropertyID="102" xsi:type="xsd:double">100</Property>
+          <Property PropertyID="103" xsi:type="xsd:double">0</Property>
+        </Item>
+      </BrowseElement>
+    </Children>
+  </BrowseElement>
+'@
+$configText = $configText.Replace($serverClosingTag, "$arrayFixture`r`n$analogFixture`r`n$serverClosingTag")
 [IO.File]::WriteAllText($stagedConfig, $configText, [Text.UTF8Encoding]::new($false))
 
 Invoke-DefenderGate -Path $stage

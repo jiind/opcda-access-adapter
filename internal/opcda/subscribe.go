@@ -125,7 +125,7 @@ func (request SubscribeRequest) validate(limits Limits) error {
 	if request.RequestedUpdateRate%time.Millisecond != 0 {
 		return NewAdapterError(CodeInvalidRequest, "requested update rate must be a whole number of milliseconds")
 	}
-	if request.Deadband < 0 || request.Deadband > 100 {
+	if !(request.Deadband >= 0 && request.Deadband <= 100) {
 		return NewAdapterError(CodeInvalidRequest, "percent deadband must be between 0 and 100")
 	}
 	return nil

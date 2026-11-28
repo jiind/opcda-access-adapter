@@ -295,6 +295,10 @@ recomputes the type and replaces the property set together, under one lock, so
 an item can change type between browses but is never briefly an
 `AnalogItemType` without an `EURange`.
 
+When Read learns a new canonical VARTYPE, the next Browse refreshes the
+property mapping immediately. Browses reuse the discovery while the type is
+the same and the refresh interval is current.
+
 **Two departures from the clause, both because a type is a promise.**
 
 A.3.1.3 says an item is `AnalogItemType` if it has High and Low EU **or** its EU

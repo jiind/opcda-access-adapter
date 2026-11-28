@@ -47,6 +47,9 @@ a genuine per-item source write denial, and the upstream everyone-access
 registration option is disabled. A separate branch uses the pinned DA 2.05a
 sample's `ArrayOfInt` and `ArrayOfString` encodings to exercise real SAFEARRAY
 operations. The probes restore the array items after Write.
+The staged configuration includes one analog Float with High and Low EU
+properties using the pinned sample's analog property syntax. Its probe
+restores the original value after checking the group's percent deadband.
 
 ## Alternatives considered
 

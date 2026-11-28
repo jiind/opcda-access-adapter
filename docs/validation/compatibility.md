@@ -10,6 +10,7 @@
 | One installed third-party DA server | [Graybox result](#recorded-result-graybox-gray-simulator) |
 | Source-built DA fixture | [Fixture results](#recorded-result-opc-foundation-da-205a-fixture) |
 | Two OPC UA MonitoredItems for the same DA ItemID | [Shared ItemID result](#opc-ua-subscription-result) |
+| OPC UA recovery within one session | [Recovery result](#opc-ua-recovery-within-one-session) |
 | Independent UA clients | [Client results](#third-party-opc-ua-client-interoperability) |
 | Long-running Read resource bounds | [Soak result](#long-running-resource-result) |
 | Running another authorized test | [Procedure](#real-da-validation-procedure) |
@@ -513,6 +514,23 @@ request included a valid DA item and an unknown ItemID. The unknown item
 returned `Bad_NodeIdUnknown` without a monitored item ID. The valid item's
 notification arrived on the same subscription, which the probe then deleted.
 [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46162466356)
+
+### OPC UA recovery within one session
+
+PR #259 head `80d20256be665f0ff7e0993f883cff2b662d19a8` passed on Windows
+Server 2025 with the pinned OPC Foundation fixture on 386 and amd64. The
+probe kept one UA channel and session across the fixture stop, unregister,
+and re-register cycle. Before the outage, the one-notification Publish limit
+left one of two sampled values unsent. During the outage, device Read returned
+a bad status without a value or source timestamp. Publish replaced the
+pending value with `Bad_NotConnected` and sent that status to both monitored
+items without values or source timestamps. Write returned `Bad_NotConnected`.
+
+After reconnect, device Read returned a usable Float and the refused Write
+value was absent. Deleting one invalidated monitor left the next two Publish
+responses as keep-alives. Explicit creation recovered delivery to the surviving
+and newly created monitors. The probe deleted the subscription and logged no
+process values. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46164214016)
 
 ### DA error code result
 

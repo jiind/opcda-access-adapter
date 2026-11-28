@@ -1073,15 +1073,15 @@ function Test-HTTPSourceArrayBounds {
     }
     try {
         Write-ArrayFixtureValue $item 'VT_I4' $changed
-        # The sample device recreates the stored array at zero. Read must
-        # report the source's bounds together with its changed elements.
-        $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $changed.elements
+        # The sample device recreates a zero-based array with a length of
+        # the original upper bound plus one. This fixture stores one element.
+        $null = Read-ArrayFixtureValue $item 'VT_I4' 3 @($changed.elements[0])
     }
     finally {
         Write-ArrayFixtureValue $item 'VT_I4' $original
     }
     $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
-    Write-Host 'HTTP_REAL_DA_SOURCE_ARRAY_BOUNDS_PASS requestedLowerBound=-2 sourceLowerBound=0 restored=true valuesLogged=false'
+    Write-Host 'HTTP_REAL_DA_SOURCE_ARRAY_BOUNDS_PASS requestedLowerBound=-2 sourceLowerBound=0 sourceLength=1 restored=true valuesLogged=false'
 }
 
 function Get-ResourceSample {

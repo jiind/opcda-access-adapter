@@ -4,6 +4,7 @@
 
 | Evidence | Record |
 |---|---|
+| Current Windows execution | [2026-11-29 results](#current-windows-execution-record) |
 | SAFEARRAY round trips against the fixture | [Array result](#recorded-result-safearray-round-trips) |
 | MCP stdio against the fixture | [MCP result](#recorded-result-mcp-stdio-and-opc-foundation-fixture) |
 | Four frontends on the Windows Graybox installation | [2026-11-28 validation](#graybox-four-frontend-validation-on-2026-11-28) |
@@ -19,6 +20,68 @@
 
 Each entry identifies its own revision and scope. Earlier results are historical
 evidence, not a claim that every later revision or vendor was tested.
+
+## Current Windows execution record
+
+The 2026-11-29 KST run tested adapter revision
+`42c602d5659c390bdea8779090f55e85ab50e4fd`. Go tests, vet, and cross-builds
+for Windows 386 and amd64 passed with Go 1.26.0. The CI rerun for that revision
+passed Windows tests and builds on both architectures, release package checks,
+specification checks, and independent UA client interoperability.
+[CI rerun](https://github.com/jiind/opcda-access-adapter/actions/runs/46167370179/attempts/2)
+
+### Graybox on the Windows laptop
+
+Windows build `10.0.26300.10075` ran the operator-supplied x86 Graybox Gray
+Simulator file version `1.7.9.701`. The installed server matched SHA-256
+`D300C7BFE3B8F01A6ADDF08EC821D7626F75E792A7A50F6AF64CC35B030BC76B`.
+The transferred adapter hashes matched the local builds. Both architectures
+printed the expected revision with `--version`; the Graybox DA cases used 386.
+
+| Adapter architecture | SHA-256 |
+|---|---|
+| 386 | `3814ae8cf6ed58352a37cb96da34f7dc13c9df76f0de35e2f0f8a53ad64701b8` |
+| amd64 | `fd62110b3e1f0ae0010258a4e4b7f05cd018ce8697978443f6832340232a2eb5` |
+
+| Area | Observed result |
+|---|---|
+| HTTP | Browse returned 15 branches and 146 leaves. Device Read succeeded for 124 leaves and returned `UNSUPPORTED_VARTYPE` for 22 `VT_DATE` leaves. Ordered partial Read preserved `0xC0040007`. Default-disabled Write, type refusal, and a same-value `VT_BOOL` Write with readback passed. |
+| gRPC | Status, root and nested Browse, ordered partial Read, properties, default-disabled Write, type and source permission errors, and typed Write passed. Subscribe delivered both changes, the source value was restored, and 24 subscribe/cancel cycles ended with zero groups. |
+| OPC UA | Endpoint and session, Browse and BrowseNext release, property nodes, Read, Write restrictions, and typed change notifications passed. Republish returned the same sequence and acknowledgement removed it. Publishing disabled and resumed, the monitored item and subscription were deleted, the original value was restored, and the session and channel closed. |
+| MCP stdio | The targeted rerun passed all nine tools in both Write modes. Each mode completed 32 subscribe/unsubscribe cycles and clean EOF with zero TCP listeners. The enabled case verified latest-per-item delivery and restored its `VT_BSTR` value. |
+| Configuration | UTF-8 BOM loading, duplicate alias refusal, four explicit frontend choices, saved-file overwrite refusal, and rejection of missing or multiple source selectors and incompatible frontend fields passed. Detection left the Graybox process set unchanged. |
+| Windows Service | HTTP, gRPC, and OPC UA temporary services under LocalService started, stopped, restarted their loopback listeners, and uninstalled. MCP service installation was refused. Graybox activation in the HTTP service returned `CoCreateInstance(IOPCServer)` with `0x80070005`. |
+
+The first MCP attempt stopped at a combined Quality and timestamp assertion in
+both Write modes. The output reported only the combined assertion. The rerun
+used a separate loopback HTTP adapter built from the same revision and compared
+both frontends' Device Read metadata for the same valid and invalid ItemIDs.
+The valid item returned Quality `32`, absent source timestamp, `VT_I4`, and
+`0x00000001` through both frontends in each mode. The invalid item preserved
+`0xC0040007`. The rerun completed with the same executable. The cause of the
+first assertion failure remains unconfirmed.
+
+With Smart App Control enabled, initial launch attempts produced App Control
+event `3077` for both artifacts. The policy was disabled during each authorized
+Graybox test window and restored afterwards. A separate check after each run
+confirmed `On`, enforced policy, and zero staging directories, test services,
+and Event Log sources. [App Control event reference](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/operations/event-id-explanations)
+
+### OPC Foundation DA 2.05a fixture
+
+The source-built fixture pinned at `efe0d1d1` passed on Windows Server 2025
+for adapter 386 with the x86 source and amd64 with the x64 source. The
+run rebuilt the executable from the same adapter revision.
+[386 job](https://github.com/jiind/opcda-access-adapter/actions/runs/46173483247/job/141066908681)
+[amd64 job](https://github.com/jiind/opcda-access-adapter/actions/runs/46173483247/job/141066908963)
+
+| Area | Observed on both architectures |
+|---|---|
+| HTTP and DA runtime | Root and nested Browse, ordered partial Device Read, default-disabled and strict typed Write, and source Write denial. One-dimensional `VT_I4` and `VT_BSTR` SAFEARRAYs changed and restored. Three source outage and recovery cycles and 200 soak Read iterations completed. |
+| gRPC | Unary operations and typed notifications passed. On one client connection, the old stream ended explicitly during a DA outage, the refused Write was absent after recovery, explicit resubscription delivered, and cancellation returned group count to zero. |
+| OPC UA | Session and address-space operations, ordered arrays, array Write refusal, and changed and restored array notifications passed. The analog item exposed `EURange` and observation of its percent deadband passed. DA outage handling discarded pending values and required explicit monitored-item creation before delivery resumed. |
+| MCP stdio | Tools, array round trips, and notifications passed. The same session handled an outage, discarded its invalidated group, refused Write without replay, and delivered after explicit resubscription. |
+| Setup and service | Registration-only detection, guided setup, and service-mode access through HTTP, gRPC and OPC UA passed under LocalService. Removal cleaned up the temporary registrations. |
 
 ## Matrix
 

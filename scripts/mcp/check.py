@@ -110,19 +110,22 @@ class Client:
 
 def check_fixture_arrays(client, write_enabled):
     fixtures = (
-        ("ValidationArrays/Int32", "VT_I4", 3, [2, -7, 31], [-31, 7, 2]),
-        ("ValidationArrays/String", "VT_BSTR", 8, ["배열", "fixture"], ["", "변경"]),
+        ("ValidationArrays/Int32", "VT_I4", 3, [(0, 3)], [2, -7, 31], [-31, 7, 2]),
+        ("ValidationArrays/String", "VT_BSTR", 8, [(0, 2)], ["배열", "fixture"], ["", "변경"]),
+        ("ValidationArrays/Matrix", "VT_I4", 3, [(0, 2), (0, 3)], [0, 1, 2, 10, 11, 12], [30, 31, 32, 40, 41, 42]),
+        ("ValidationArrays/OffsetMatrix", "VT_I4", 3, [(1, 2), (-2, 3)], [0, 1, 2, 10, 11, 12], [30, 31, 32, 40, 41, 42]),
     )
-    for item_id, element_type, element_code, initial, changed in fixtures:
+    for item_id, element_type, element_code, dimensions, initial, changed in fixtures:
         array_type = element_type + "|VT_ARRAY"
         expected_type = {"code": 0x2000 | element_code, "name": element_type, "array": True}
+        expected_dimensions = [{"lowerBound": lower, "length": length} for lower, length in dimensions]
 
         def check(item, elements):
             assert item["ok"] and item["itemId"] == item_id, "array operation changed the ItemID or failed"
             assert item["dataType"] == item["canonicalDataType"] == expected_type, "array VARTYPE changed"
             shape = item["value"]
             assert item["valueEncoding"] == "array" and shape["elementDataType"]["name"] == element_type, "array element type changed"
-            assert shape["dimensions"] == [{"lowerBound": 0, "length": len(elements)}], "array dimensions changed"
+            assert shape["dimensions"] == expected_dimensions, "array dimensions changed"
             assert shape["elements"] == elements, "ordered array elements changed"
             return shape
 
@@ -170,7 +173,8 @@ def check_fixture_arrays(client, write_enabled):
             client.tool("da_unsubscribe", {"subscriptionId": group["subscriptionId"]})
         assert client.tool("da_status", {})["runtime"]["subscriptionCount"] == 0, "array group was not released"
     enabled = str(write_enabled).lower()
-    print(f"MCP_REAL_DA_ARRAY_PASS variants=2 initialCallbacks=true writeRoundTrip={enabled} changeNotifications={enabled} valuesLogged=false")
+    print(f"MCP_REAL_DA_ARRAY_PASS items={len(fixtures)} multidimensional=true nonzeroLowerBounds=true "
+          f"initialCallbacks=true writeRoundTrip={enabled} changeNotifications={enabled} valuesLogged=false")
 
 
 def wait_for_status(client, matches, failure):

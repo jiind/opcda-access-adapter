@@ -189,6 +189,8 @@ type Node struct {
 	// DataTypeKnown records whether the canonical DA type has a concrete UA
 	// mapping. The source typically supplies the type in an AddItems result.
 	DataTypeKnown bool
+	// canonicalType retains the exact DA VARTYPE for strictly typed Writes.
+	canonicalType *opcda.DAVarType
 
 	// semanticProperties remembers what each semantic property last said, and
 	// semanticGeneration counts how often one of them was seen to change.
@@ -793,8 +795,15 @@ func (s *AddressSpace) nodeForEntry(path []string, entry opcda.BrowseEntry) (*No
 			// base type rather than guessed at.
 			DataType: NumericNodeID(0, NodeIDBaseDataType),
 		}
-		if entry.CanonicalType != nil {
-			applyDAVariableType(node, *entry.CanonicalType)
+		canonicalType := entry.CanonicalType
+		if canonicalType == nil {
+			// A fresh Browse normally omits the type that AddItems supplied.
+			if previous := s.nodes[nodeKey(node.ID)]; previous != nil {
+				canonicalType = previous.canonicalType
+			}
+		}
+		if canonicalType != nil {
+			applyDAVariableType(node, *canonicalType)
 		}
 		node.AccessLevel, node.AccessRightsKnown = accessLevelFor(entry.AccessRights)
 		return node, nil
@@ -844,7 +853,7 @@ func (s *AddressSpace) LearnFromRead(id NodeID, canonicalType *opcda.DAVarType, 
 	if !ok || node.Class != NodeClassVariable {
 		return
 	}
-	learnType := canonicalType != nil && !node.DataTypeKnown
+	learnType := canonicalType != nil && (node.canonicalType == nil || *node.canonicalType != *canonicalType)
 	learnRights := rights != nil && !node.AccessRightsKnown
 	if !learnType && !learnRights {
 		return
@@ -857,9 +866,6 @@ func (s *AddressSpace) LearnFromRead(id NodeID, canonicalType *opcda.DAVarType, 
 	}
 	if learnRights {
 		enriched.AccessLevel, enriched.AccessRightsKnown = accessLevelFor(rights)
-	}
-	if !learnRights && !enriched.DataTypeKnown && enriched.ValueRank == node.ValueRank {
-		return
 	}
 	s.nodes[nodeKey(id)] = &enriched
 }

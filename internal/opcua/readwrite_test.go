@@ -591,6 +591,80 @@ func TestWriteIsStrictlyTyped(t *testing.T) {
 	}
 }
 
+func TestUAWritePreservesCanonicalAliasAfterRead(t *testing.T) {
+	const id opcda.DAItemID = "Test/CanonicalType"
+	for _, fixture := range []struct {
+		sourceType opcda.DAVarType
+		wireType   BuiltInTypeID
+		value      any
+	}{
+		{opcda.VTInt, BuiltInInt32, int32(-42)},
+		{opcda.VTUInt, BuiltInUInt32, uint32(42)},
+		{opcda.VTError, BuiltInInt32, int32(-23)},
+	} {
+		t.Run(fixture.sourceType.String(), func(t *testing.T) {
+			runtime := &stubRuntime{
+				readResults: []opcda.ReadResult{{
+					ItemID: id, VarType: &fixture.sourceType, CanonicalType: &fixture.sourceType,
+					Value: &opcda.DAValue{
+						ItemID: id, VarType: fixture.sourceType, Value: fixture.value, QualityRaw: QualityGood,
+					},
+					HRESULT: opcda.SOK, HRESULTPresent: true,
+				}},
+				writeResults: []opcda.WriteResult{{ItemID: id, HRESULT: opcda.SOK, HRESULTPresent: true}},
+			}
+			service, space := testDataService(t, runtime)
+			node := ItemNodeID(id)
+			now := time.Now().UTC()
+			response, err := service.Read(context.Background(), readRequestFor(readValue(node)), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := response.Results[0]
+			if row.Status != StatusGood || row.Value.Type != fixture.wireType || row.Value.Value != fixture.value {
+				t.Fatal("Read did not expose the source value in its expected UA scalar type")
+			}
+
+			// DA Browse omits the canonical type that the Read learned.
+			if err := space.PopulateBranch(nil, []opcda.BrowseEntry{{
+				Kind: opcda.BrowseEntryItem, Name: "CanonicalType", ItemID: itemID(string(id)),
+			}}); err != nil {
+				t.Fatal(err)
+			}
+
+			write := WriteRequest{NodesToWrite: []WriteValue{{
+				NodeID: node, AttributeID: AttributeValue, Value: DataValue{Value: row.Value},
+			}}}
+			result, err := service.Write(context.Background(), write, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Results[0] != StatusGood || len(runtime.writeItems) != 1 {
+				t.Fatal("the corresponding UA scalar Write did not reach the DA runtime")
+			}
+			item := runtime.writeItems[0]
+			if item.ItemID != id || item.VarType != fixture.sourceType || item.Value != fixture.value {
+				t.Fatalf("typed Write used %s, want source VARTYPE %s", item.VarType, fixture.sourceType)
+			}
+
+			updatedType := fixture.sourceType.DecodesAs()
+			runtime.readResults[0].CanonicalType = &updatedType
+			runtime.readResults[0].VarType = &updatedType
+			runtime.readResults[0].Value.VarType = updatedType
+			if _, err := service.Read(context.Background(), readRequestFor(readValue(node)), now); err != nil {
+				t.Fatal(err)
+			}
+			result, err = service.Write(context.Background(), write, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Results[0] != StatusGood || runtime.writeCalls != 2 || runtime.writeItems[0].VarType != updatedType {
+				t.Fatalf("Write did not use the refreshed canonical VARTYPE %s", updatedType)
+			}
+		})
+	}
+}
+
 // Table 53: a server returns Bad_WriteNotSupported if it cannot write
 // timestamps or an indexRange. The DA core writes values only.
 func TestWriteRefusesTimestampsStatusAndIndexRange(t *testing.T) {

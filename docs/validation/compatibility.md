@@ -399,6 +399,13 @@ released accepted groups and used a successful device Read after each trial
 to wait for the DA thread before checking that zero groups remained active.
 [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46158056233)
 
+PR #256 head `9e6972f6f380c3e00088ceac3fedbefc122680a6` passed on Windows
+Server 2025 with the pinned fixture on 386 and amd64. After reconnect to
+generation 2, the DA runtime returned `SUBSCRIPTION_INVALIDATED` for a group
+replacement requiring generation 1 and kept zero active groups. An explicit
+Subscribe then created `sub-2-1` and received callbacks on both architectures.
+[Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46161628899)
+
 ### Phase 8 OPC UA frontend result
 
 PR #51 workflow run

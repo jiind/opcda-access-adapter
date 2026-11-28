@@ -5,6 +5,7 @@
 | Evidence | Record |
 |---|---|
 | MCP stdio against the fixture | [MCP result](#recorded-result-mcp-stdio-and-opc-foundation-fixture) |
+| Four frontends on the Windows Graybox installation | [2026-11-28 validation](#graybox-four-frontend-validation-on-2026-11-28) |
 | One installed third-party DA server | [Graybox result](#recorded-result-graybox-gray-simulator) |
 | Source-built DA fixture | [Fixture results](#recorded-result-opc-foundation-da-205a-fixture) |
 | Independent UA clients | [Client results](#third-party-opc-ua-client-interoperability) |
@@ -131,6 +132,81 @@ This result establishes behavior for one installed x86 copy only. It does not
 establish the binary's provenance, other Graybox versions, x64 behavior, broad
 vendor compatibility, or OPC certification. The server exposed scalar items
 only, so it added no real-source SAFEARRAY evidence.
+
+## Graybox four-frontend validation on 2026-11-28
+
+The Windows 10.0.26300.10075 laptop ran adapter commit
+`d67bb6b29b282cc0d38bc1bdd03183a9816deb66`, built for `windows/386` with
+Go 1.26.0. The executable SHA-256 was
+`3302DFF53847CAD60EE51D76D42BAAAD872D5283D85474E65FDF8E9BD1DAFFFB`.
+The operator supplied the Graybox installer. The installed x86 executable
+matched the SHA-256 and file version `1.7.9.701` in the previous Graybox record.
+The source was the exact local CLSID `{2C2E36B7-FE45-4A29-BF89-9BFBA6A40857}`.
+The probes retained process values in memory during comparisons and recorded
+operation results and metadata.
+
+| Area | Observed result |
+|---|---|
+| HTTP/JSON | PASS for Status, full Browse, ordered Device Read, property enumeration and partial property Read, Write policy, strict typing, source access denial, changed-value Write and restoration, input rejection, backpressure and recovery. |
+| gRPC | PASS for Status, root/nested Browse, ordered partial Device Read, item properties, default-disabled Write, strict typing, source access denial, typed Write, two change-driven updates, restoration, and cancellation cleanup. Twenty-four rapid subscribe/cancel cycles finished with zero active groups. During a source outage, Read returned `Unavailable` and the old stream ended with `Aborted`. Reconnect advanced the generation and delivered again after explicit resubscription. |
+| OPC UA | PASS for UA-TCP, `SecurityPolicy None` endpoint, SecureChannel, session activation, full address-space Browse, BrowseNext and continuation-point release, property nodes, Bad Quality mapping, default-disabled Write, strict typing, read-only denial, changed-value Write, and source readback and restoration. A Subscription and MonitoredItem received two usable change-driven Publish notifications at a revised interval of 250 ms. Republish returned the same sequence, and acknowledgement removed it. Disabling publishing stopped notifications and reenabling delivered the newest value. DeleteMonitoredItems, DeleteSubscriptions, CloseSession and CloseSecureChannel succeeded. Unsupported services returned a ServiceFault and the channel continued serving. |
+| MCP stdio | PASS for initialization, all nine tools, exact IDs, source metadata, property ordering and refusal, default-disabled Write, strict typing, Unicode `VT_BSTR` Write, latest-per-item delivery, restoration, explicit unsubscribe, stale-handle rejection, and EOF with a group still owned. The Windows process opened zero TCP listeners and stdout carried protocol messages. FAIL for rapid repeated subscribe/unsubscribe. |
+| Guided setup | PASS for explicit source and all four frontend choices, save-only operation, default-disabled Write, exclusive configuration creation, and rejecting zero or two sources and multiple frontend settings. Detection and save-only setup left the Graybox PID set unchanged. |
+| Windows Service | PASS for LocalService/automatic-start metadata, one configured loopback listener, lifecycle Event Log entry, and complete service and Event Log source removal for HTTP, gRPC and OPC UA. MCP service installation was refused. Graybox activation in the HTTP LocalService process was BLOCKED by `CoCreateInstance(IOPCServer)` with `0x80070005`. |
+
+- HTTP Browse returned 15 branches and 146 leaves. Device Read succeeded for
+  124 leaves across 12 VARTYPEs and explicitly refused 22 `VT_DATE` leaves.
+  Successful rows had raw Quality `32`, absent source timestamps, and
+  successful HRESULT `0x00000001`. An unknown ItemID preserved `0xC0040007`.
+  Properties 1, 5, 6, 7 and 101 were queryable on the sampled storage item.
+  An unknown property preserved `0xC0040203`, and a reserved property caused
+  request rejection. The source-denied Write preserved `0xC0040006`.
+- The HTTP stability probe completed 5,000 sequential Reads, 3,200 mixed
+  requests across 16 workers, incomplete header and body cases, oversized and
+  malformed requests, and a 48-request saturation case. With 32 request slots
+  occupied, 16 overload requests returned `QUEUE_FULL` and the listener
+  recovered. A separate 1,000-iteration, three-item Read soak took 2,571 ms.
+  Adapter private bytes grew by 5,726,208 and handles by 16. Sampled Graybox
+  private bytes grew by 348,160 and handles by zero, with a stable PID set over
+  that interval.
+- Three HTTP source-stop cycles returned unavailable Read without cached data
+  and preserved HRESULT `0x800706BA`. The connection advanced from generation
+  1 to 4. After each recovery, Read lazily registered the items again and the
+  Write rejected during the outage did not appear in the storage item.
+- OPC UA mapped Graybox raw Quality `32` to `Bad_WaitingForInitialData`
+  (`0x80320000`) with absent source timestamp and value. A separate read-only
+  HTTP process verified the two changed `VT_R8` values and the restoration.
+  The source exposed unnamed properties and item descriptions. It exposed no
+  named Table A.1 property, so this run could not validate named mapping or the
+  acceptance of a UA percent deadband on an item with `EURange`.
+- Two diagnostic MCP runs completed three rapid cycles and stopped on the
+  fourth. The adapter exited with code 2 and reported
+  `runtime.Pinner: found leaking pinned pointer; forgot to call Unpin()?`.
+  The DA COM teardown removes the callback's registry entry and only unpins
+  when its reference count has dropped to the adapter's own reference. A
+  delayed COM release is consistent with the observed unrooted pin owner.
+
+Graybox provides x86 registration and scalar items in this installation.
+The separate [OPC Foundation fixture run for PR #237](https://github.com/jiind/opcda-access-adapter/actions/runs/45027358487)
+passed its x86 and x64 jobs. The [dedicated Windows VM destructive review](local-vm-destructive.md)
+remains open, including machine permission mutation and reboot. Real-source
+SAFEARRAY coverage remains open.
+
+### Follow-up: delayed callback release and LocalService
+
+- The callback-lifetime regression passed on the same Windows laptop for
+  both `386` and `amd64` test binaries. It holds a server reference through
+  teardown and forced Go collection, verifies that a late notification cannot
+  reach the retired subscription, and confirms the last COM reference
+  releases the pin. This was a native test with a simulated callback.
+- Windows application control refused to launch the updated `386` adapter
+  with `WinError 4551`. The proposed Graybox rerun, including rapid MCP
+  cycling and recovery, is **BLOCKED** on that host.
+- The read-only COM inventory matched the installed Graybox CLSID and AppID.
+  The AppID had no `LaunchPermission`, `AccessPermission`, or `RunAs`
+  override in either registry view. The System log contained matching
+  DistributedCOM `10016` events. The earlier LocalService activation result
+  remains **BLOCKED**; no COM configuration changes were made.
 
 ## Recorded result: OPC Foundation DA 2.05a fixture
 

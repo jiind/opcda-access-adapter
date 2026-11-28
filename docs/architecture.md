@@ -106,6 +106,11 @@ Disconnect invalidates subscriptions and discards pending values. Reconnect
 advances the generation and restores no subscription. Resubscribe is explicit;
 a slow consumer does not terminate a DA group.
 
+During teardown, the DA thread detaches the callback target before `Unadvise`
+and releases the group and its COM interfaces. COM may still hold a reference
+to the callback object. The registry keeps its pin alive until the last
+`IUnknown::Release`, without retaining the retired subscription or its values.
+
 ## Operational boundary
 
 Network frontends bind to loopback by default. There is no production TLS,

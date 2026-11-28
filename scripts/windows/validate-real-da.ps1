@@ -608,13 +608,26 @@ function Get-ServerProcesses {
     return @(Get-Process -Name $script:ServerProcessName -ErrorAction SilentlyContinue)
 }
 
+function Get-ApplicationLogRecordID {
+    try {
+        $latest = Get-WinEvent -LogName 'Application' -MaxEvents 1 -ErrorAction Stop
+        return [long]$latest.RecordId
+    }
+    catch {
+        if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound,*') {
+            throw
+        }
+        return [long]0
+    }
+}
+
 function Wait-ServiceStartupEvents {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProviderName,
 
         [Parameter(Mandatory = $true)]
-        [DateTime]$Since,
+        [long]$AfterRecordID,
 
         [Parameter(Mandatory = $true)]
         [string]$Frontend,
@@ -623,23 +636,30 @@ function Wait-ServiceStartupEvents {
         [int]$TimeoutSeconds = 60
     )
 
-    # Application Event Log visibility and DA activation are both asynchronous.
-    # Wait for both records before asserting that startup and source connection
-    # were reported as distinct events.
+    # Query recorded provider names directly. Classic service event sources
+    # can be registered or removed while their Application records remain.
+    $filter = "*[System[(EventRecordID > $AfterRecordID) and Provider[@Name='$ProviderName']]]"
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
-        $events = @(Get-WinEvent -FilterHashtable @{
-            LogName = 'Application'
-            ProviderName = $ProviderName
-            StartTime = $Since
-        } -ErrorAction SilentlyContinue)
+        try {
+            $events = @(Get-WinEvent -LogName 'Application' -FilterXPath $filter -ErrorAction Stop)
+        }
+        catch {
+            if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound,*') {
+                throw
+            }
+            $events = @()
+        }
         $messages = @($events | Where-Object { $_.Properties.Count -gt 0 } | ForEach-Object { [string]$_.Properties[0].Value })
-        if (($messages -like "OPC DA Access Adapter $Frontend listener started on *") -and
-            ($messages -like 'OPC DA source connected (generation *)')) {
+        $listenerSeen = @($messages -like "OPC DA Access Adapter $Frontend listener started on *").Count -gt 0
+        $sourceSeen = @($messages -like 'OPC DA source connected (generation *)').Count -gt 0
+        if ($listenerSeen -and $sourceSeen) {
+            [Console]::WriteLine("SERVICE_STARTUP_EVENT_PASS frontend=$Frontend listener=True sourceConnected=True")
             return $true
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
+    [Console]::WriteLine("SERVICE_STARTUP_EVENT_CHECK frontend=$Frontend listener=$listenerSeen sourceConnected=$sourceSeen")
     return $false
 }
 
@@ -712,9 +732,8 @@ function Test-GuidedSetupWindowsService {
     $script:GuidedConfigPath = Join-Path $script:GuidedConfigDirectory 'adapter.json'
     $guidedPort = if ($AdapterArch -eq '386') { 18081 } else { 18082 }
     $answers = "$($selectedIndex + 1)`r`n1`r`n2`r`ny`r`n"
-    $serviceTestStarted = Get-Date
-
     try {
+        $eventCheckpoint = Get-ApplicationLogRecordID
         Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(
             'setup',
             '--config', $script:GuidedConfigPath,
@@ -750,7 +769,7 @@ function Test-GuidedSetupWindowsService {
             $script:BaseURL = $savedBaseURL
         }
 
-        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $script:GuidedServiceName -Since $serviceTestStarted -Frontend 'http'
+        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $script:GuidedServiceName -AfterRecordID $eventCheckpoint -Frontend 'http'
         Assert-True $serviceStarted 'guided service did not report listener startup and DA connection separately'
 
         Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(
@@ -799,9 +818,8 @@ function Test-GuidedSetupGRPCWindowsService {
     $configPath = Join-Path $configDirectory 'adapter.json'
     $grpcPort = if ($AdapterArch -eq '386') { 18551 } else { 18552 }
     $answers = "$($selectedIndex + 1)`r`n2`r`n2`r`ny`r`n"
-    $serviceTestStarted = Get-Date
-
     try {
+        $eventCheckpoint = Get-ApplicationLogRecordID
         Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(
             'setup',
             '--config', $configPath,
@@ -830,7 +848,7 @@ function Test-GuidedSetupGRPCWindowsService {
             '-timeout', '60s'
         ) -TimeoutSeconds 90
 
-        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $serviceName -Since $serviceTestStarted -Frontend 'grpc'
+        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $serviceName -AfterRecordID $eventCheckpoint -Frontend 'grpc'
         Assert-True $serviceStarted 'gRPC guided service did not report listener startup and DA connection separately'
 
         Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(

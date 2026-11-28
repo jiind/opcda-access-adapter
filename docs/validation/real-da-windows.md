@@ -165,6 +165,11 @@ complete semantic, failure/reconnect, load/backpressure, and 200-Read soak
 regression. See the compatibility matrix for the exact observations and the
 limits of this evidence.
 
+The guided HTTP and gRPC checks capture the latest Application Event Log record
+ID before service installation. They match the test service's provider and
+require separate listener-started and DA-connected records after that ID.
+The check reports which record was visible if the timeout expires.
+
 Phase 6 gRPC run
 [`32752269529`](https://github.com/jiind/opcda-access-adapter/actions/runs/32752269529)
 passed the explicit gRPC guided LocalService lifecycle plus unary Status,

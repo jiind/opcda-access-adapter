@@ -152,6 +152,11 @@ invalid listener/bounds, and zero or multiple sources fail closed. Environment
 variables are not merged into file-based execution, so a Windows Service runs
 the exact file that was reviewed.
 
+Configuration files use UTF-8 and may begin with a UTF-8 byte-order mark.
+Malformed UTF-8 and unpaired surrogate escapes are rejected. Field names that
+the JSON decoder treats as equal, such as `writeEnabled` and `WriteEnabled`,
+count as duplicates in the same object.
+
 Run a saved configuration in the current terminal:
 
 ```powershell

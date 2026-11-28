@@ -1215,7 +1215,7 @@ func (s *SubscriptionService) prepareMonitoredItem(subscription *uaSubscription,
 	if !create.MonitoringMode.Valid() {
 		return failed(StatusBadMonitoringModeInvalid), nil
 	}
-	// This adapter exposes no arrays, so an indexRange cannot apply.
+	// The DA group reports whole item values, including arrays.
 	if create.ItemToMonitor.IndexRange != "" {
 		return failed(StatusBadIndexRangeInvalid), nil
 	}

@@ -37,6 +37,9 @@ bounds for arrays. Array Write accepts the Read value object with a matching
 declared VARTYPE. A recognized connection loss during branch ID lookup enters
 the DA runtime's reconnect path.
 
+OPC UA nodes report the element `DataType` and array `ValueRank` once the
+source provides the canonical VARTYPE. Array Write remains unsupported.
+
 ## Validation achieved
 
 | Evidence | What it establishes | Limit |

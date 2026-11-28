@@ -49,6 +49,14 @@ trips. The probes recorded operation outcomes and metadata. Real-source
 results for other array types, multiple dimensions, nonzero lower bounds,
 and change-driven array notifications remain open.
 
+PR #242 head `002c3e45b47c873f31c1017a9d99cc4e82869791` extended the fixture
+probe to read the OPC UA attributes after reading the arrays. On 386 and
+amd64, the Int32 and String nodes reported their element `DataType` and
+`ValueRank` `0` (`OneOrMoreDimensions`). `Write` with either an array or a
+matching scalar returned `Bad_TypeMismatch` for the known array node. The
+386 job passed on rerun after its first attempt stopped at the HTTP service
+Event Log check. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46137910254/attempts/2)
+
 ## Recorded result: MCP stdio and OPC Foundation fixture
 
 - Executed on 2026-10-27 for PR #227 head

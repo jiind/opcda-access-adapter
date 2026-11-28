@@ -47,9 +47,7 @@ const (
 	variantArrayValues     byte = 0x80
 )
 
-// Variant is a union of the built-in types. This adapter produces scalars only,
-// because the DA core decodes no arrays, so an array Variant is decoded but
-// never constructed.
+// Variant carries a built-in scalar or an array of a built-in type.
 type Variant struct {
 	Type BuiltInTypeID
 	// Value holds the scalar, or the element slice when IsArray is set. It is

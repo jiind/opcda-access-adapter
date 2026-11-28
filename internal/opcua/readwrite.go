@@ -411,7 +411,7 @@ func (s *DataAccessService) Read(ctx context.Context, request ReadRequest, now t
 	var propertyTargets []propertyTarget
 
 	for index, target := range request.NodesToRead {
-		// Table 167: indexRange is for arrays, and this adapter exposes none.
+		// Array values are returned whole. The adapter does not slice DA values.
 		if target.IndexRange != "" {
 			results[index] = failedDataValue(StatusBadIndexRangeInvalid)
 			continue
@@ -958,7 +958,9 @@ func (s *DataAccessService) writeToSource(ctx context.Context, items []opcda.Wri
 // Bad_TypeMismatch. Refusing locally instead would make every browsed item
 // permanently unwritable over a restriction the adapter invented.
 func writeItemForNode(node *Node, variant Variant) (opcda.WriteItem, bool) {
-	if variant.IsNull() || variant.IsArray {
+	// An array node's DataType describes its elements. A matching scalar
+	// Variant still cannot write that node.
+	if variant.IsNull() || variant.IsArray || node.ValueRank >= ValueRankOneOrMoreDimensions {
 		return opcda.WriteItem{}, false
 	}
 	if node.DataTypeKnown {

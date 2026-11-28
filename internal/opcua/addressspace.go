@@ -58,11 +58,10 @@ const (
 	AccessLevelCurrentWrite byte = 1 << 1
 )
 
-// ValueRank values. A scalar is -1, and zero is the rank for a value that is
-// an array of one or more dimensions without saying how many -- which is what
-// A.3.1.4 gives an array-valued DA property, because a DA source does not
-// declare an array property's dimension count ahead of reading it.
+// ValueRank describes whether a value is scalar or an array. Part 8 uses
+// OneOrMoreDimensions for DA arrays because their dimension count is unknown.
 const (
+	ValueRankAny                 int32 = -2
 	ValueRankScalar              int32 = -1
 	ValueRankOneOrMoreDimensions int32 = 0
 )
@@ -187,10 +186,8 @@ type Node struct {
 	// AddItems, not in Browse, so a browsed item usually arrives without them.
 	AccessLevel       byte
 	AccessRightsKnown bool
-	// DataTypeKnown records whether the source told us the canonical type. OPC
-	// DA carries it in the AddItems result, not in Browse, so a browsed item
-	// arrives without it and the node reports the abstract base type until a
-	// Read teaches it otherwise.
+	// DataTypeKnown records whether the canonical DA type has a concrete UA
+	// mapping. The source typically supplies the type in an AddItems result.
 	DataTypeKnown bool
 
 	// semanticProperties remembers what each semantic property last said, and
@@ -694,7 +691,7 @@ func (s *AddressSpace) ResolveVariable(id NodeID, maxNodes int) (*Node, bool) {
 		// is known to be a DA item, and BaseDataVariableType is a type Annex A
 		// does not offer.
 		TypeDefinition: NumericNodeID(0, NodeIDDataItemType),
-		ValueRank:      ValueRankScalar,
+		ValueRank:      ValueRankAny,
 		ItemID:         itemID,
 		DataType:       NumericNodeID(0, NodeIDBaseDataType),
 	}
@@ -790,19 +787,14 @@ func (s *AddressSpace) nodeForEntry(path []string, entry opcda.BrowseEntry) (*No
 			DisplayName: display,
 			// The Annex A.3.1.3 floor, until the item's properties are known.
 			TypeDefinition: NumericNodeID(0, NodeIDDataItemType),
-			ValueRank:      ValueRankScalar,
+			ValueRank:      ValueRankAny,
 			ItemID:         *entry.ItemID,
 			// A type the mapping cannot express is reported as the abstract
 			// base type rather than guessed at.
 			DataType: NumericNodeID(0, NodeIDBaseDataType),
 		}
 		if entry.CanonicalType != nil {
-			if dataType, ok := DataTypeFor(*entry.CanonicalType); ok {
-				if id, resolved := DataTypeNodeID(dataType); resolved {
-					node.DataType = id
-					node.DataTypeKnown = true
-				}
-			}
+			applyDAVariableType(node, *entry.CanonicalType)
 		}
 		node.AccessLevel, node.AccessRightsKnown = accessLevelFor(entry.AccessRights)
 		return node, nil
@@ -852,17 +844,24 @@ func (s *AddressSpace) LearnFromRead(id NodeID, canonicalType *opcda.DAVarType, 
 	if !ok || node.Class != NodeClassVariable {
 		return
 	}
-	if canonicalType != nil && !node.DataTypeKnown {
-		if dataType, mapped := DataTypeFor(*canonicalType); mapped {
-			if resolved, ok := DataTypeNodeID(dataType); ok {
-				node.DataType = resolved
-				node.DataTypeKnown = true
-			}
-		}
+	learnType := canonicalType != nil && !node.DataTypeKnown
+	learnRights := rights != nil && !node.AccessRightsKnown
+	if !learnType && !learnRights {
+		return
 	}
-	if rights != nil && !node.AccessRightsKnown {
-		node.AccessLevel, node.AccessRightsKnown = accessLevelFor(rights)
+
+	// Readers can hold the previous node while its metadata is learned.
+	enriched := *node
+	if learnType {
+		applyDAVariableType(&enriched, *canonicalType)
 	}
+	if learnRights {
+		enriched.AccessLevel, enriched.AccessRightsKnown = accessLevelFor(rights)
+	}
+	if !learnRights && !enriched.DataTypeKnown && enriched.ValueRank == node.ValueRank {
+		return
+	}
+	s.nodes[nodeKey(id)] = &enriched
 }
 
 // NodeCount reports how many nodes the space holds, for diagnostics.

@@ -64,10 +64,11 @@ that the DA core decodes that VARTYPE: unsupported values still fail explicitly.
 The specification maps `VT_DATE` to `Double`. The DA core currently refuses
 `VT_DATE` and `VT_DECIMAL` values rather than converting them.
 
-Outgoing array values carry their element type and dimensions. Array Writes
-are refused, and ordinary DA item nodes retain scalar `ValueRank` metadata.
-UA refuses a DA array with a nonzero lower bound as `Bad_NotSupported`, because
-a UA Variant cannot carry that bound. By-reference variants are unsupported.
+Outgoing array values carry their element type and dimensions. A node with a
+known DA array type reports the element `DataType` and `ValueRank` `0`
+(`OneOrMoreDimensions`). Array Writes are refused. UA returns `Bad_NotSupported`
+for a DA array with a nonzero lower bound, because a UA Variant cannot carry
+that bound. By-reference variants are unsupported.
 See the [array encoding](data-access.md#arrays) and
 [executed fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips).
 

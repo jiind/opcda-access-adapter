@@ -265,6 +265,27 @@ func TestNestedBranchesAreDistinct(t *testing.T) {
 	}
 }
 
+func TestReadTeachesTheAddressSpaceAnArrayType(t *testing.T) {
+	space := testAddressSpace(t)
+	id := ItemNodeID("Test/Array")
+	initial, ok := space.ResolveVariable(id, testNodeBudget)
+	if !ok || initial.ValueRank != ValueRankAny || initial.DataTypeKnown {
+		t.Fatal("the item should start without source type metadata")
+	}
+
+	space.LearnFromRead(id, varType(opcda.VTI4|opcda.VTArray), nil)
+	node, ok := space.Node(id)
+	if !ok || node.ValueRank != ValueRankOneOrMoreDimensions || !node.DataType.Equal(NumericNodeID(0, NodeIDInt32)) {
+		t.Fatalf("unexpected metadata after learning the array type: %+v", node)
+	}
+	if initial.ValueRank != ValueRankAny || initial.DataTypeKnown {
+		t.Fatal("learning the array type changed a node already held by a reader")
+	}
+	if _, accepted := writeItemForNode(node, Variant{Type: BuiltInInt32, Value: int32(2)}); accepted {
+		t.Fatal("a matching scalar type was accepted for an array node")
+	}
+}
+
 func TestItemNodesCarryDataTypeAndAccessLevel(t *testing.T) {
 	space := testAddressSpace(t)
 	rights := func(read, write bool) *opcda.DAAccessRights {
@@ -284,6 +305,8 @@ func TestItemNodesCarryDataTypeAndAccessLevel(t *testing.T) {
 			CanonicalType: varType(opcda.VTR4), AccessRights: rights(true, false)},
 		{Kind: opcda.BrowseEntryItem, Name: "bstr", ItemID: itemID("bstr"),
 			CanonicalType: varType(opcda.VTBSTR), AccessRights: rights(true, false)},
+		{Kind: opcda.BrowseEntryItem, Name: "array", ItemID: itemID("array"),
+			CanonicalType: varType(opcda.VTI4 | opcda.VTArray), AccessRights: rights(true, true)},
 		// A VARTYPE with no Table A.2 row falls back to the abstract base type
 		// rather than borrowing a similar one.
 		{Kind: opcda.BrowseEntryItem, Name: "cy", ItemID: itemID("cy"),
@@ -299,13 +322,15 @@ func TestItemNodesCarryDataTypeAndAccessLevel(t *testing.T) {
 	cases := []struct {
 		item        string
 		dataType    uint32
+		valueRank   int32
 		accessLevel byte
 	}{
-		{"i4", NodeIDInt32, AccessLevelCurrentRead | AccessLevelCurrentWrite},
-		{"r4", NodeIDFloat, AccessLevelCurrentRead},
-		{"bstr", NodeIDString, AccessLevelCurrentRead},
-		{"cy", NodeIDBaseDataType, AccessLevelCurrentRead},
-		{"unknown", NodeIDBaseDataType, AccessLevelCurrentRead | AccessLevelCurrentWrite},
+		{"i4", NodeIDInt32, ValueRankScalar, AccessLevelCurrentRead | AccessLevelCurrentWrite},
+		{"r4", NodeIDFloat, ValueRankScalar, AccessLevelCurrentRead},
+		{"bstr", NodeIDString, ValueRankScalar, AccessLevelCurrentRead},
+		{"array", NodeIDInt32, ValueRankOneOrMoreDimensions, AccessLevelCurrentRead | AccessLevelCurrentWrite},
+		{"cy", NodeIDBaseDataType, ValueRankScalar, AccessLevelCurrentRead},
+		{"unknown", NodeIDBaseDataType, ValueRankAny, AccessLevelCurrentRead | AccessLevelCurrentWrite},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.item, func(t *testing.T) {
@@ -324,9 +349,8 @@ func TestItemNodesCarryDataTypeAndAccessLevel(t *testing.T) {
 			if node.AccessRightsKnown != (testCase.item != "unknown") {
 				t.Fatalf("access rights known = %t for %q", node.AccessRightsKnown, testCase.item)
 			}
-			// The DA core decodes no arrays, so every variable is a scalar.
-			if node.ValueRank != ValueRankScalar {
-				t.Fatalf("value rank = %d", node.ValueRank)
+			if node.ValueRank != testCase.valueRank {
+				t.Fatalf("value rank = %d, want %d", node.ValueRank, testCase.valueRank)
 			}
 			// A browsed item whose properties nobody has asked for yet sits at
 			// the Annex A.3.1.3 floor. BaseDataVariableType is a type Annex A

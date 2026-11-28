@@ -16,7 +16,7 @@ suits their source should not have to find them scattered through the document.
 | A.3.1.2 | the root branch's BrowseName "should" be the Server ProgId | named from `OPCDA_OPCUA_SOURCE_FOLDER`, default `Source` — a source may be configured by CLSID, where there is no ProgID, and an operator who wants the clause's behaviour can configure it |
 | A.3.1.3 | `AnalogItemType` if the item has High and Low EU **or** an Analog EU Type | the EU Type alone does not promote, because 5.3.2.3 makes `EURange` mandatory and there would be no range to publish |
 | A.3.1.3 | `MultiStateDiscreteType` for an enumerated EU Type | never claimed: its mandatory `EnumStrings` is `LocalizedText[]` and EU Info is a DA `String[]`, a conversion this adapter has not decided |
-| A.3.1.4 | an array-valued property is exposed with `ValueRank` `OneOrMoreDimensions` | applied |
+| A.3.1.3 and A.3.1.4 | array-valued items and properties use `ValueRank` `OneOrMoreDimensions` | applied when the source has reported the DA VARTYPE |
 | Table A.3 | DA `LAST_KNOWN` → `Bad_OutOfService` | `Uncertain_NoCommunicationLastUsableValue`, because Table 61 says so and explains why: a Bad severity must return a Null value, which discards the last known value the quality exists to carry |
 | 5.2 | the `SemanticsChanged` bit is set when a semantic property changes | set when the adapter **observes** a change, which is when a property is read; a change nobody reads is not detected, and detecting every one means polling the source |
 | OPC 10000-5 Table 9 | `ServerType` makes `ServerDiagnostics` a mandatory component of the Server Object | not published. Its mandatory children are counters, session and subscription diagnostics arrays this server does not collect, and publishing them as zeros would report a diagnostic answer rather than the absence of one. The other eight mandatory components are carried |
@@ -55,19 +55,17 @@ specification.
 Two points are easy to get wrong and are called out deliberately:
 
 - **`VT_DATE` maps to `Double`, not `DateTime`.** Table A.2 says `Double`.
-- **`VT_ARRAY` has a Table A.2 row** (array of the mapped element type). The DA
-  core decodes arrays now ([ADR-0019](../../design/adr/0019-safearray-representation.md)) and
-  a Read carries one as a UA array Variant, with one refusal described below.
-  `DataTypeFor` still reports an array VARTYPE as unmapped, because what it
-  answers is a node's `DataType` attribute and Table A.2's array row is a
-  `ValueRank`, not a type id. By-reference variants remain unmapped outright.
+- **`VT_ARRAY` has a Table A.2 row** (array of the mapped element type). Node
+  metadata expresses the element as `DataType` and the array flag as
+  `ValueRank`. A Read carries the array as a UA Variant when its shape can be
+  represented. See [ADR-0019](../../design/adr/0019-safearray-representation.md).
 
 ### Arrays
 
-UA array support currently applies to outgoing values. Array Writes are
-refused. Ordinary DA item nodes still advertise scalar `ValueRank` even when
-the returned value is an array; Other Properties report array rank correctly.
-These are current limitations of this frontend.
+Array Write and scalar Write to a known array node return `Bad_TypeMismatch`.
+Items and properties with a known array VARTYPE report `ValueRank` `0`
+(`OneOrMoreDimensions`). An item without canonical type metadata reports
+`ValueRank` `-2` (`Any`) until the source provides its type.
 
 A Read of an array item answers a Variant with the array bit set, a length
 prefix, and — for more than one dimension — an ArrayDimensions field, which is

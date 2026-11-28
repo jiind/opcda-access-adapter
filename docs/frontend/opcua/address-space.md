@@ -293,10 +293,10 @@ different parents stay distinct nodes.
 
 ### Types and access
 
-A variable's DataType comes from the Part 8 mapping. A VARTYPE with no Table A.2
-row falls back to the **abstract base type** rather than borrowing a
-numerically similar one. Ordinary DA item nodes still report scalar `ValueRank`
-even when Read returns an array; see the [array limitations](data-access.md#arrays).
+A variable's `DataType` comes from the Part 8 mapping. An unmapped VARTYPE
+uses `BaseDataType`. A known array uses the mapped element `DataType` and
+`ValueRank` `OneOrMoreDimensions`. When the canonical type is unknown, the
+node reports `BaseDataType` and `ValueRank` `Any`. [Array mapping](data-access.md#arrays)
 
 ### A browsed item knows neither its type nor its rights
 

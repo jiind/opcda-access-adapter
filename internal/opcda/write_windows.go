@@ -3,6 +3,7 @@
 package opcda
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -12,12 +13,12 @@ import (
 	"unsafe"
 )
 
-func (session *daThreadSession) writeValues(items []WriteItem, limits ArrayLimits) (resultsOut []WriteResult, errOut error) {
+func (session *daThreadSession) writeValues(ctx context.Context, items []WriteItem, limits ArrayLimits) (resultsOut []WriteResult, errOut error) {
 	itemIDs := make([]DAItemID, len(items))
 	for index := range items {
 		itemIDs[index] = items[index].ItemID
 	}
-	registrations, registered, registrationResults, err := session.resolveRegistrations(itemIDs)
+	registrations, registered, registrationResults, err := session.resolveRegistrations(ctx, itemIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +63,9 @@ func (session *daThreadSession) writeValues(items []WriteItem, limits ArrayLimit
 			errOut = fmt.Errorf("clear IOPCSyncIO::Write values: %w", clearErr)
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	var errorPointer unsafe.Pointer
 	methodResult, _, _ := syscall.SyscallN(

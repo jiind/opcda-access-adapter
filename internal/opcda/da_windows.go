@@ -3,6 +3,7 @@
 package opcda
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -226,7 +227,7 @@ type registrationAttempt struct {
 	errorCode    string
 }
 
-func (session *daThreadSession) resolveRegistrations(itemIDs []DAItemID) ([]itemRegistration, []bool, []ReadResult, error) {
+func (session *daThreadSession) resolveRegistrations(ctx context.Context, itemIDs []DAItemID) ([]itemRegistration, []bool, []ReadResult, error) {
 	registrations := make([]itemRegistration, len(itemIDs))
 	registered := make([]bool, len(itemIDs))
 	results := make([]ReadResult, len(itemIDs))
@@ -246,34 +247,39 @@ func (session *daThreadSession) resolveRegistrations(itemIDs []DAItemID) ([]item
 		pendingIndices[itemID] = append(pendingIndices[itemID], index)
 	}
 
-	available := session.registrations.remaining()
-	if len(pendingOrder) > available {
-		for _, itemID := range pendingOrder[available:] {
-			for _, index := range pendingIndices[itemID] {
-				results[index].ErrorCode = string(CodeRegisteredItemLimit)
-			}
-			delete(pendingIndices, itemID)
+	for len(pendingOrder) > 0 {
+		batchSize := min(len(pendingOrder), session.registrations.remaining())
+		if batchSize == 0 {
+			break
 		}
-		pendingOrder = pendingOrder[:available]
-	}
-	if len(pendingOrder) == 0 {
-		return registrations, registered, results, nil
-	}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
 
-	attempts, err := session.addItems(pendingOrder)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	for itemIndex, itemID := range pendingOrder {
-		attempt := attempts[itemIndex]
-		for _, resultIndex := range pendingIndices[itemID] {
-			results[resultIndex].HRESULT = attempt.hresult
-			results[resultIndex].HRESULTPresent = attempt.hresultSet
-			results[resultIndex].ErrorCode = attempt.errorCode
-			if attempt.ok {
-				registrations[resultIndex] = attempt.registration
-				registered[resultIndex] = true
+		// Successful registrations consume slots. A per-item error leaves
+		// room for an unattempted item in the next batch.
+		batch := pendingOrder[:batchSize]
+		attempts, err := session.addItems(batch)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for itemIndex, itemID := range batch {
+			attempt := attempts[itemIndex]
+			for _, resultIndex := range pendingIndices[itemID] {
+				results[resultIndex].HRESULT = attempt.hresult
+				results[resultIndex].HRESULTPresent = attempt.hresultSet
+				results[resultIndex].ErrorCode = attempt.errorCode
+				if attempt.ok {
+					registrations[resultIndex] = attempt.registration
+					registered[resultIndex] = true
+				}
 			}
+		}
+		pendingOrder = pendingOrder[batchSize:]
+	}
+	for _, itemID := range pendingOrder {
+		for _, index := range pendingIndices[itemID] {
+			results[index].ErrorCode = string(CodeRegisteredItemLimit)
 		}
 	}
 	return registrations, registered, results, nil
@@ -351,8 +357,8 @@ func (session *daThreadSession) addItems(itemIDs []DAItemID) ([]registrationAtte
 	return attempts, nil
 }
 
-func (session *daThreadSession) readDevice(itemIDs []DAItemID, limits ArrayLimits) ([]ReadResult, error) {
-	registrations, registered, results, err := session.resolveRegistrations(itemIDs)
+func (session *daThreadSession) readDevice(ctx context.Context, itemIDs []DAItemID, limits ArrayLimits) ([]ReadResult, error) {
+	registrations, registered, results, err := session.resolveRegistrations(ctx, itemIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -366,6 +372,9 @@ func (session *daThreadSession) readDevice(itemIDs []DAItemID, limits ArrayLimit
 	}
 	if len(handles) == 0 {
 		return results, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	var statePointer, errorPointer unsafe.Pointer

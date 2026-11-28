@@ -1111,6 +1111,55 @@ function Read-Items {
     return Require-Status -Response $response -Expected 200 -Operation 'Read'
 }
 
+function Test-HTTPRegistrationLimit {
+    param([object]$FixtureFloat)
+
+    $previousLimit = [Environment]::GetEnvironmentVariable('OPCDA_MAX_REGISTERED_ITEMS')
+    $missing = '__opcda_adapter_invalid_item__'
+    $known = 'Test/Int32'
+    $floatItem = 'Test/Float'
+    Assert-True ($FixtureFloat.ok -and $FixtureFloat.itemId -ceq $floatItem -and
+        $FixtureFloat.canonicalDataType.name -ceq 'VT_R4') 'registration-limit Write fixture was unavailable'
+    $probe = $null
+    $env:OPCDA_MAX_REGISTERED_ITEMS = '1'
+    try {
+        $probe = Start-Adapter -WriteEnabled $false -Label 'registration-limit-read'
+        $null = Wait-Connected
+        $read = (Read-Items @($missing, $known, $known)).results
+        Assert-True ($read.Count -eq 3 -and $read[0].itemId -ceq $missing -and
+            -not $read[0].ok -and $read[0].hresult.hex -ceq '0xC0040007') 'registration-limit Read lost the source error'
+        Assert-True ($read[1].itemId -ceq $known -and $read[1].ok -and
+            $read[2].itemId -ceq $known -and $read[2].ok) 'registration-limit Read refused a valid item after a failed registration'
+
+        $full = (Read-Items @($floatItem, $known)).results
+        Assert-True ($full.Count -eq 2 -and $full[0].itemId -ceq $floatItem -and
+            -not $full[0].ok -and $full[0].errorCode -ceq 'REGISTERED_ITEM_LIMIT_EXCEEDED' -and
+            $full[1].itemId -ceq $known -and $full[1].ok) 'full registration cache did not retain the existing handle and refuse a new item'
+
+        Stop-Adapter $probe
+        $probe = Start-Adapter -WriteEnabled $true -Label 'registration-limit-write'
+        $null = Wait-Connected
+        $items = @($missing, $floatItem) | ForEach-Object {
+            @{ itemId = $_; dataType = 'VT_R4'; valueEncoding = 'json'; value = $FixtureFloat.value }
+        }
+        $body = ConvertTo-RequestJSON @{ items = @($items) }
+        $response = Send-AdapterRequest -Method POST -Path '/v1/write' -Body $body
+        $write = (Require-Status -Response $response -Expected 200 -Operation 'registration-limit Write').results
+        Assert-True ($write.Count -eq 2 -and $write[0].itemId -ceq $missing -and
+            -not $write[0].ok -and $write[0].hresult.hex -ceq '0xC0040007') 'registration-limit Write lost the source error'
+        Assert-True ($write[1].itemId -ceq $floatItem -and $write[1].ok -and
+            $write[1].hresult.hex -ceq '0x00000000') 'registration-limit Write refused a valid item after a failed registration'
+        $readback = (Read-Items @($floatItem)).results
+        Assert-True ($readback.Count -eq 1 -and $readback[0].ok -and
+            $readback[0].value -eq $FixtureFloat.value) 'registration-limit Write did not read back the same value'
+    }
+    finally {
+        Stop-Adapter $probe
+        $env:OPCDA_MAX_REGISTERED_ITEMS = $previousLimit
+    }
+    Write-Host 'HTTP_REGISTRATION_LIMIT_PASS capacity=1 partialRead=true duplicateRead=true fullCache=true sameValueWrite=true valuesLogged=false'
+}
+
 function Read-ArrayFixtureValue {
     param([string]$ItemID, [string]$ElementType, [int]$ElementCode, [object[]]$Elements)
 
@@ -1651,6 +1700,11 @@ try {
     Assert-True ($adapterAfter.PrivateBytes -lt 536870912 -and $adapterPrivateDelta -lt 67108864) 'adapter private-byte growth exceeded the validation bound'
     Assert-True ($serverAfter.Handles -lt 2048 -and $serverHandleDelta -lt 128) 'test server handle growth exceeded the validation bound'
     Assert-True ($serverAfter.PrivateBytes -lt 536870912 -and $serverPrivateDelta -lt 67108864) 'test server private-byte growth exceeded the validation bound'
+
+    $registrationFixtureFloat = (Read-Items @('Test/Float')).results[0]
+    Stop-Adapter $adapter
+    $adapter = $null
+    Test-HTTPRegistrationLimit -FixtureFloat $registrationFixtureFloat
 
     # The adapter logs through log/slog's default handler, which writes
     # key=value text, not JSON. Checking only for the JSON shapes would miss a

@@ -519,7 +519,7 @@ func (r *windowsRuntime) ReadBatch(ctx context.Context, request ReadRequest) ([]
 				responses <- response{err: NewAdapterError(CodeRuntimeUnavailable, "OPC DA runtime is not connected")}
 				return
 			}
-			results, err := session.readDevice(request.Items, r.config.Limits.ArrayLimits())
+			results, err := session.readDevice(ctx, request.Items, r.config.Limits.ArrayLimits())
 			r.handleOperationFailure(session, err)
 			responses <- response{results: results, err: err}
 		},
@@ -575,7 +575,7 @@ func (r *windowsRuntime) WriteBatch(ctx context.Context, items []WriteItem) ([]W
 				responses <- response{err: NewAdapterError(CodeRuntimeUnavailable, "OPC DA runtime is not connected")}
 				return
 			}
-			results, err := session.writeValues(items, r.config.Limits.ArrayLimits())
+			results, err := session.writeValues(ctx, items, r.config.Limits.ArrayLimits())
 			r.handleOperationFailure(session, err)
 			responses <- response{results: results, err: err}
 		},

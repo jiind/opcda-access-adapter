@@ -66,7 +66,9 @@ the Application Event Log record ID captured before installation.
 
 OPC UA Publish keeps one unsent notification per monitored item across response
 limits. Deleting an item clears its pending notification. A DA disconnection
-replaces unsent values with `Bad_NotConnected`.
+replaces unsent values with `Bad_NotConnected`. The fixture passed with a
+one-notification Publish limit on both architectures.
+[Subscription result](validation/compatibility.md#opc-ua-subscription-result)
 
 ## Release blocker and next work
 

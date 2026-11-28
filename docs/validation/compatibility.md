@@ -23,12 +23,15 @@ evidence, not a claim that every later revision or vendor was tested.
 
 ## Current Windows execution record
 
-The 2026-11-29 KST laptop runs tested adapter revision
+The initial 2026-11-29 KST laptop runs tested adapter revision
 `42c602d5659c390bdea8779090f55e85ab50e4fd`. Go tests, vet, and cross-builds
 for Windows 386 and amd64 passed with Go 1.26.0. The CI rerun for that revision
 passed Windows tests and builds on both architectures, release package checks,
 specification checks, and independent UA client interoperability.
 [CI rerun](https://github.com/jiind/opcda-access-adapter/actions/runs/46167370179/attempts/2)
+
+The [latest Graybox run](#graybox-rerun-after-the-registration-fix) verified
+the registration fix and repeated the four frontend checks on the laptop.
 
 ### Graybox on the Windows laptop
 
@@ -89,14 +92,35 @@ python scripts/mcp/check_graybox_read.py --adapter .\adapter.exe --clsid '{2C2E3
 A fresh 386 HTTP process used `OPCDA_MAX_REGISTERED_ITEMS=1` with Write
 disabled. It sent the following Device Reads in order.
 
-| Request | Expected | Observed |
-|---|---|---|
-| An unknown ItemID followed by two copies of `enum.color` | The unknown item returns `0xC0040007`. Both valid rows use the one available registration. | The unknown item returned the expected HRESULT. Both valid rows returned `REGISTERED_ITEM_LIMIT_EXCEEDED` even though the failed registration left space. |
-| `enum.color` alone | The item can use the available registration or reuse its cached handle. | The read succeeded. |
-| A different valid ItemID after the successful read | The full registration cache refuses another item. | `REGISTERED_ITEM_LIMIT_EXCEEDED` was returned. |
+| Request | Expected | `42c602d` | `170e9b6` |
+|---|---|---|---|
+| An unknown ItemID followed by two copies of `enum.color` | The unknown item returns `0xC0040007`. Both valid rows use the one available registration. | The unknown HRESULT was preserved. Both valid rows returned `REGISTERED_ITEM_LIMIT_EXCEEDED`. | The unknown HRESULT was preserved and both valid rows succeeded. |
+| `enum.color` alone | The item can use the available registration or reuse its cached handle. | The read succeeded. | The read succeeded. |
+| A different valid ItemID after the successful read | The full registration cache refuses another item. | `REGISTERED_ITEM_LIMIT_EXCEEDED`. | `REGISTERED_ITEM_LIMIT_EXCEEDED`. |
 
-The first request failed the boundary check. The standalone and full-cache
-controls passed. The execution record contains metadata and error codes only.
+The revised Windows fixture script also checks the one-slot boundary with
+a fresh Read and a separate same-value typed Write. It checks that an unknown
+ItemID retains its HRESULT and a later valid ItemID can use the available slot.
+
+#### Graybox rerun after the registration fix
+
+The 2026-11-29 KST follow-up ran adapter revision
+`170e9b671c3c9e22626f9ae3a06fe693dc6ab0e1`, built with Go 1.26.0, on the
+same Windows build and installed Graybox executable.
+
+| Adapter architecture | SHA-256 | Executed scope |
+|---|---|---|
+| 386 | `c92e60cf38612c59e7d841284597fec476ff218861750dd45d7f917a7b877fe8` | Four frontends, guided setup, temporary Service lifecycle, and the one-slot Read regression |
+| amd64 | `48763905f4f374ae69788b8aff7338f5a8ce1a14e9643cf63aefad32b08c8ef6` | `--version` |
+
+The foreground cases passed again. HTTP Browse returned 15 branches and 146
+leaves, with 124 successful Device Reads and 22 explicit `VT_DATE` refusals.
+gRPC finished 24 subscribe/cancel cycles with zero groups. OPC UA passed
+the typed Write and notification checks. MCP passed all nine tools in both
+Write modes, including 32 subscribe/unsubscribe cycles per mode and clean EOF.
+The three temporary Windows Services passed start, stop, restart, and
+removal. HTTP Service activation of Graybox under LocalService returned
+`0x80070005` again. The laptop run exited successfully.
 
 With Smart App Control enabled, initial launch attempts produced App Control
 event `3077` for both artifacts. The policy was disabled during each authorized

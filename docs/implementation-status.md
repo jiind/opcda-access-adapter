@@ -66,13 +66,14 @@ run links, resource deltas, and scenario limits. It remains the authority for
 executed compatibility claims.
 
 The [current Windows execution record](validation/compatibility.md#current-windows-execution-record)
-covers the same adapter revision on the Graybox laptop and the 386 and amd64
-OPC Foundation fixture jobs. The instrumented Graybox run reproduced an MCP
-probe assertion when the source began returning different Quality, timestamp
-and HRESULT metadata through both MCP and HTTP. The corrected comparison
-passed all nine MCP tools in both Write modes during a full laptop rerun.
-The rerun also exposed a mixed Device Read that refused valid items before
-the registration cache filled. [Registration limit result](validation/compatibility.md#registration-limit-with-a-mixed-device-read)
+covers the baseline Graybox laptop and both OPC Foundation fixture jobs,
+as well as the later Graybox rerun. The instrumented Graybox run reproduced
+an MCP probe assertion when the source began returning different Quality,
+timestamp and HRESULT metadata through both MCP and HTTP. The corrected
+comparison passed all nine MCP tools in both Write modes. The later rerun
+also verified the registration fix. A failed ItemID kept its native HRESULT,
+both copies of the valid item succeeded in the same Read, and a new item was
+refused once the cache filled. [Registration limit result](validation/compatibility.md#registration-limit-with-a-mixed-device-read)
 
 The real-DA fixture's guided service checks verify both startup records after
 the Application Event Log record ID captured before installation.

@@ -429,6 +429,12 @@ accepted handles. Both handles received the initial value, two values changed
 through typed OPC UA Write, and the restored original value through Publish.
 The probe deleted the subscription. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46156299684)
 
+PR #251 head `04ce31cdbaa939441e8c40eb1dd85459f2508f91` passed on Windows
+Server 2025 with the same fixture on 386 and amd64. With the client limit set
+to one notification per Publish response, the initial delivery signaled
+`MoreNotifications`. Both monitors received the initial, changed, and
+restored values within that limit. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46157213655)
+
 ### DA error code result
 
 PR #71 workflow run

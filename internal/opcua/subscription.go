@@ -3,6 +3,7 @@ package opcua
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -862,18 +863,14 @@ type monitoredItem struct {
 	// or higher than the requested one, and reporting a rate the client then
 	// does not receive would make that promise a lie in the other direction.
 	samplingInterval float64
-	// held is the newest notification this item has produced but not yet
-	// reported, and lastReported is when it last reported one. Pacing holds
-	// rather than drops: queueSize is one, so the newest value is the one the
-	// client wants, and dropping would leave a client that asked for a slow
-	// rate stuck on a stale value whenever the source went quiet.
+	// held is the newest unsent notification. lastReported is when the item
+	// was last included in a Publish response.
 	held         *DataValue
 	lastReported time.Time
 
 	// semanticGeneration is the address space's count of semantic property
-	// changes as of this item's last notification. Clause 5.2 asks for the bit
-	// on one notification per monitored item, so the two are compared rather
-	// than a flag being set and cleared.
+	// changes as of this item's last sample. The bit stays set in held until
+	// the changed semantics are reported to the client.
 	semanticGeneration uint64
 }
 
@@ -910,9 +907,6 @@ type uaSubscription struct {
 	da opcda.Subscription
 
 	sequenceNumber uint32
-	// pending holds notifications drained from the DA core but not yet
-	// published, so a Publish that arrives after a change still carries it.
-	pending []MonitoredItemNotification
 	// retransmit holds sent messages a client has not acknowledged, and
 	// retransmitOrder is the order they were sent in. Clause 5.14.1.1 bounds
 	// the queue and says what happens when it fills: "in the case of a
@@ -1419,6 +1413,10 @@ func (s *SubscriptionService) DeleteMonitoredItems(ctx context.Context, sessionT
 		removed = true
 	}
 	if removed {
+		subscription.heldOrder = slices.DeleteFunc(subscription.heldOrder, func(id uint32) bool {
+			_, exists := subscription.items[id]
+			return !exists
+		})
 		if err := s.rebuildDASubscription(ctx, subscription, now); err != nil {
 			// The items are gone either way; the DA subscription is released so
 			// notifications for removed items cannot keep arriving.
@@ -1655,7 +1653,8 @@ func (s *SubscriptionService) tryPublish(ctx context.Context, sessionToken strin
 	}
 
 	s.collect(ctx, subscription, now)
-	message, ready := s.buildMessage(subscription, now)
+	notifications, more := s.takeNotifications(subscription, now)
+	message, ready := s.buildMessage(subscription, notifications, now)
 	if !ready {
 		return PublishResponse{}, false, nil
 	}
@@ -1671,7 +1670,7 @@ func (s *SubscriptionService) tryPublish(ctx context.Context, sessionToken strin
 		},
 		SubscriptionID:           subscription.id,
 		AvailableSequenceNumbers: available,
-		MoreNotifications:        len(subscription.pending) > 0,
+		MoreNotifications:        more,
 		NotificationMessage:      message,
 		Results:                  acknowledgements,
 		Diagnostics:              []DiagnosticInfo{},
@@ -1698,11 +1697,11 @@ func (s *SubscriptionService) nextPublishable(sessionToken string) *uaSubscripti
 func (s *SubscriptionService) collect(ctx context.Context, subscription *uaSubscription, now time.Time) {
 	s.holdUnreadable(subscription)
 	if subscription.da == nil {
-		// Every item is unreadable, or none has been created yet. There is no
-		// group to drain, but a held status still has to reach the client.
-		s.flushHeld(subscription, now)
 		return
 	}
+	// Check invalidation after draining to discard a batch captured just
+	// before the source disconnected.
+	values := subscription.da.Drain()
 	select {
 	case <-subscription.da.Done():
 		// The DA subscription was invalidated, which the DA core does on a
@@ -1715,7 +1714,6 @@ func (s *SubscriptionService) collect(ctx context.Context, subscription *uaSubsc
 	default:
 	}
 
-	values := subscription.da.Drain()
 	for _, value := range values {
 		// One DA callback sample feeds every reporting monitor of this ItemID.
 		for _, item := range subscription.items {
@@ -1726,11 +1724,12 @@ func (s *SubscriptionService) collect(ctx context.Context, subscription *uaSubsc
 			// so it teaches the address space what Browse could not.
 			s.space.LearnFromRead(item.nodeID, value.CanonicalType, value.AccessRights)
 			notification := dataValueForSubscription(value, item.timestamps, now)
-			// Clause 5.2: each monitored item reports a changed semantic generation once.
-			if generation := s.space.SemanticGeneration(item.itemID); generation != item.semanticGeneration {
+			// Preserve the bit when this sample replaces one the client has not received.
+			generation := s.space.SemanticGeneration(item.itemID)
+			if generation != item.semanticGeneration || (item.held != nil && item.held.Status.HasSemanticsChanged()) {
 				notification.Status = notification.Status.WithSemanticsChanged()
-				item.semanticGeneration = generation
 			}
+			item.semanticGeneration = generation
 			// Keep the newest value for each item's own sampling interval.
 			if item.held == nil {
 				subscription.heldOrder = append(subscription.heldOrder, item.id)
@@ -1738,41 +1737,37 @@ func (s *SubscriptionService) collect(ctx context.Context, subscription *uaSubsc
 			item.held = &notification
 		}
 	}
-	s.flushHeld(subscription, now)
 }
 
-// flushHeld reports each item's held value once its own sampling interval has
-// come round. An item that asked for no more than the group's rate reports
-// every value the group delivers; one that asked for less reports the newest
-// value it has, which is what a queue of one holds.
-func (s *SubscriptionService) flushHeld(subscription *uaSubscription, now time.Time) {
+// takeNotifications sends due values up to the response limit. Each item
+// continues to hold just its newest value until it fits in a Publish response.
+func (s *SubscriptionService) takeNotifications(subscription *uaSubscription, now time.Time) ([]MonitoredItemNotification, bool) {
 	if !subscription.publishingEnabled {
-		// Clause 5.14.1.1: disabling "causes the Subscription to cease sending
-		// NotificationMessages to the Client", while the items keep sampling.
-		// So values stay held rather than queueing up to be sent later: the
-		// held slot is one value per item, which is exactly the queue of one
-		// each item was promised, and moving them into the send queue would
-		// both grow it without bound and hand the client every value that
-		// occurred while it had asked for none.
-		return
+		return nil, false
 	}
+	maximum := s.limits.MaxNotificationsPerPublish
+	// A client limit of zero leaves the server's limit in effect. Compare
+	// before narrowing to int, which is only 32 bits on Windows 386.
+	if requested := uint64(subscription.maxNotifications); requested > 0 && requested < uint64(maximum) {
+		maximum = int(requested)
+	}
+
+	var notifications []MonitoredItemNotification
+	more := false
 	stillHeld := subscription.heldOrder[:0]
 	for _, id := range subscription.heldOrder {
-		item, ok := subscription.items[id]
-		if !ok || item.held == nil {
-			// The item was deleted, or reported by an earlier pass.
-			continue
-		}
-		// An item that has never reported has a zero lastReported, which is
-		// unboundedly long ago, so its first value is never paced -- a client
-		// that has just subscribed is waiting for the current value, not for
-		// an interval to elapse before it learns anything.
-		if now.Sub(item.lastReported) < time.Duration(item.samplingInterval)*time.Millisecond {
-			// Not due yet: it keeps its place in the queue as well as its value.
+		item := subscription.items[id]
+		elapsed := float64(now.Sub(item.lastReported)) / float64(time.Millisecond)
+		if !item.lastReported.IsZero() && elapsed < item.samplingInterval {
 			stillHeld = append(stillHeld, id)
 			continue
 		}
-		subscription.pending = append(subscription.pending, MonitoredItemNotification{
+		if len(notifications) == maximum {
+			more = true
+			stillHeld = append(stillHeld, id)
+			continue
+		}
+		notifications = append(notifications, MonitoredItemNotification{
 			ClientHandle: item.clientHandle,
 			Value:        *item.held,
 		})
@@ -1780,6 +1775,7 @@ func (s *SubscriptionService) flushHeld(subscription *uaSubscription, now time.T
 		item.lastReported = now
 	}
 	subscription.heldOrder = stillHeld
+	return notifications, more
 }
 
 // holdUnreadable gives each item the source will not let anyone read its status,
@@ -1803,8 +1799,7 @@ func (s *SubscriptionService) holdUnreadable(subscription *uaSubscription) {
 // reportInvalidation queues a bad status for every reporting item, so a client
 // learns the source is gone instead of seeing the stream stop.
 func (s *SubscriptionService) reportInvalidation(subscription *uaSubscription, now time.Time) {
-	// Whatever was held is superseded: the source is gone, so a value waiting
-	// for its sampling interval describes a world that no longer exists.
+	// Replace all unsent values, including ones that were already due.
 	subscription.heldOrder = subscription.heldOrder[:0]
 	for _, item := range subscription.items {
 		item.held = nil
@@ -1815,9 +1810,10 @@ func (s *SubscriptionService) reportInvalidation(subscription *uaSubscription, n
 		if item.timestamps == TimestampsServer || item.timestamps == TimestampsBoth {
 			value.ServerTimestamp = now
 		}
-		subscription.pending = append(subscription.pending, MonitoredItemNotification{
-			ClientHandle: item.clientHandle, Value: value,
-		})
+		item.held = &value
+		// Disconnection is reportable immediately, regardless of sampling interval.
+		item.lastReported = time.Time{}
+		subscription.heldOrder = append(subscription.heldOrder, item.id)
 	}
 }
 
@@ -1851,14 +1847,14 @@ func dataValueForSubscription(value opcda.SubscriptionValue, timestamps Timestam
 	}, timestamps, now)
 }
 
-// buildMessage takes up to the negotiated maximum from the pending set. With
-// nothing pending it counts one publishing cycle towards the keep-alive, and
+// buildMessage packages a batch of notifications. With no data to send it
+// counts one publishing cycle towards the keep-alive, and
 // reports ready only once maxKeepAliveCount cycles have passed with nothing to
 // say. Reporting ready on every empty cycle would answer the client's Publish
 // immediately and let it ask again at once, which is the busy loop this holds
 // back.
-func (s *SubscriptionService) buildMessage(subscription *uaSubscription, now time.Time) (NotificationMessage, bool) {
-	if !subscription.publishingEnabled || len(subscription.pending) == 0 {
+func (s *SubscriptionService) buildMessage(subscription *uaSubscription, notifications []MonitoredItemNotification, now time.Time) (NotificationMessage, bool) {
+	if len(notifications) == 0 {
 		subscription.keepAliveTicks++
 		// The first cycle answers whatever the count says, because a client
 		// that has just created a subscription is waiting to hear it is
@@ -1883,18 +1879,6 @@ func (s *SubscriptionService) buildMessage(subscription *uaSubscription, now tim
 		return NotificationMessage{SequenceNumber: subscription.sequenceNumber + 1, PublishTime: now}, true
 	}
 
-	maximum := s.limits.MaxNotificationsPerPublish
-	// Table 82: a zero maxNotificationsPerPublish means the client has no
-	// limit, so the server's own bound applies.
-	if subscription.maxNotifications > 0 && int(subscription.maxNotifications) < maximum {
-		maximum = int(subscription.maxNotifications)
-	}
-	count := len(subscription.pending)
-	if count > maximum {
-		count = maximum
-	}
-	notifications := subscription.pending[:count]
-	subscription.pending = subscription.pending[count:]
 	subscription.keepAliveTicks = 0
 	subscription.messageSent = true
 	subscription.sequenceNumber++

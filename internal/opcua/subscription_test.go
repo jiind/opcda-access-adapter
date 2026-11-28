@@ -871,16 +871,7 @@ func TestPublishAcknowledgements(t *testing.T) {
 func TestMaxNotificationsPerPublishIsHonoured(t *testing.T) {
 	runtime := &subscribingRuntime{}
 	service, _ := testSubscriptionService(t, runtime)
-	response, err := service.CreateSubscription(testSession, CreateSubscriptionRequest{
-		Header:                      RequestHeader{AdditionalHeader: NullExtensionObject()},
-		RequestedPublishingInterval: 250,
-		MaxNotificationsPerPublish:  1,
-		PublishingEnabled:           true,
-	}, channelEpoch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id := response.SubscriptionID
+	id := createSubscriptionWithPublishLimit(t, service, 1)
 	monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
 	monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
 
@@ -888,31 +879,114 @@ func TestMaxNotificationsPerPublishIsHonoured(t *testing.T) {
 		daNotification("Test/Int32", 1, QualityGood),
 		daNotification("Test/Float", 2, QualityGood),
 	)
-	published, err := service.Publish(context.Background(), testSession, PublishRequest{
-		Header: RequestHeader{AdditionalHeader: NullExtensionObject()},
+	check := func(at time.Time, handle uint32, value int32, more bool) {
+		t.Helper()
+		published := publishResponseAt(t, service, at)
+		notifications := published.NotificationMessage.Notifications
+		if len(notifications) != 1 || notifications[0].ClientHandle != handle ||
+			notifications[0].Value.Value.Value != value || published.MoreNotifications != more {
+			t.Fatalf("Publish returned %+v with MoreNotifications=%t, want handle %d, value %d, more=%t",
+				notifications, published.MoreNotifications, handle, value, more)
+		}
+	}
+	check(channelEpoch, 1, 1, true)
+
+	// A new batch arrives before handle 2 fits. It keeps its oldest pending
+	// position, but carries only its newest value.
+	runtime.latest().push(
+		daNotification("Test/Int32", 3, QualityGood),
+		daNotification("Test/Float", 4, QualityGood),
+	)
+	now := channelEpoch.Add(time.Second)
+	check(now, 2, 4, true)
+	check(now, 1, 3, false)
+}
+
+func createSubscriptionWithPublishLimit(t *testing.T, service *SubscriptionService, limit uint32) uint32 {
+	t.Helper()
+	response, err := service.CreateSubscription(testSession, CreateSubscriptionRequest{
+		Header:                      RequestHeader{AdditionalHeader: NullExtensionObject()},
+		RequestedPublishingInterval: 250,
+		MaxNotificationsPerPublish:  limit,
+		PublishingEnabled:           true,
 	}, channelEpoch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(published.NotificationMessage.Notifications) != 1 {
-		t.Fatalf("notifications = %d, want the client's limit",
-			len(published.NotificationMessage.Notifications))
+	return response.SubscriptionID
+}
+
+func TestMaxNotificationsPerPublishAcceptsFullUInt32(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscriptionWithPublishLimit(t, service, ^uint32(0))
+	monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+	runtime.latest().push(daNotification("Test/Int32", 1, QualityGood))
+	published := publishResponseAt(t, service, channelEpoch)
+	if len(published.NotificationMessage.Notifications) != 1 || published.MoreNotifications {
+		t.Fatal("a valid UInt32 limit changed the server's notification bound")
 	}
-	// What did not fit is reported as more, not dropped.
-	if !published.MoreNotifications {
-		t.Fatal("the remainder was not reported as more notifications")
+}
+
+func TestDeletedMonitorDoesNotPublishAnUnsentValue(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscriptionWithPublishLimit(t, service, 1)
+	monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+	removed := monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
+	runtime.latest().push(
+		daNotification("Test/Int32", 1, QualityGood),
+		daNotification("Test/Float", 2, QualityGood),
+	)
+	if !publishResponseAt(t, service, channelEpoch).MoreNotifications {
+		t.Fatal("the second item was not waiting to publish")
 	}
-	published, err = service.Publish(context.Background(), testSession, PublishRequest{
-		Header: RequestHeader{AdditionalHeader: NullExtensionObject()},
-	}, channelEpoch)
-	if err != nil {
-		t.Fatal(err)
+	now := channelEpoch.Add(time.Second)
+	response, err := service.DeleteMonitoredItems(context.Background(), testSession, DeleteMonitoredItemsRequest{
+		Header:           RequestHeader{AdditionalHeader: NullExtensionObject()},
+		SubscriptionID:   id,
+		MonitoredItemIDs: []uint32{removed.MonitoredItemID},
+	}, now)
+	if err != nil || len(response.Results) != 1 || response.Results[0] != StatusGood {
+		t.Fatalf("DeleteMonitoredItems returned %v, %v", response.Results, err)
 	}
-	if len(published.NotificationMessage.Notifications) != 1 {
-		t.Fatal("the remainder was not delivered")
+	if count := publishNothing(t, service, now); count != 0 {
+		t.Fatalf("Publish returned %d notifications after the pending item was deleted", count)
 	}
-	if published.MoreNotifications {
-		t.Fatal("more notifications were reported with nothing left")
+}
+
+func TestInvalidationReplacesNotificationsThatDidNotFit(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscriptionWithPublishLimit(t, service, 1)
+	monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+	monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
+	runtime.latest().push(
+		daNotification("Test/Int32", 1, QualityGood),
+		daNotification("Test/Float", 2, QualityGood),
+	)
+	if !publishResponseAt(t, service, channelEpoch).MoreNotifications {
+		t.Fatal("the second item was not waiting to publish")
+	}
+	runtime.latest().invalidate()
+	now := channelEpoch.Add(time.Millisecond)
+	seen := make(map[uint32]bool)
+	for index := range 2 {
+		published := publishResponseAt(t, service, now)
+		notifications := published.NotificationMessage.Notifications
+		if len(notifications) != 1 || published.MoreNotifications != (index == 0) {
+			t.Fatalf("invalidation response %d has %d notifications and MoreNotifications=%t",
+				index, len(notifications), published.MoreNotifications)
+		}
+		notification := notifications[0]
+		if notification.Value.Status != StatusBadNotConnected || !notification.Value.Value.IsNull() ||
+			!notification.Value.SourceTimestamp.IsZero() || notification.Value.ServerTimestamp != now {
+			t.Fatalf("invalidation sent incorrect data for handle %d", notification.ClientHandle)
+		}
+		seen[notification.ClientHandle] = true
+	}
+	if !seen[1] || !seen[2] {
+		t.Fatal("invalidation did not reach both items")
 	}
 }
 
@@ -1420,6 +1494,30 @@ func TestSemanticsChangedIsCarriedOnceAndThenStops(t *testing.T) {
 	}
 }
 
+func TestSemanticsChangedSurvivesCoalescing(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, space := testSubscriptionService(t, runtime)
+	id := createSubscription(t, service)
+	const itemID = "Test/Int32"
+	monitorAt(t, service, id, ItemNodeID(itemID), 1, 5000)
+	runtime.latest().push(daNotification(itemID, 1, QualityGood))
+	publishOnce(t, service, channelEpoch)
+
+	space.NoteSemanticProperty(itemID, "EngineeringUnits", Variant{Type: BuiltInString, Value: "degC"})
+	space.NoteSemanticProperty(itemID, "EngineeringUnits", Variant{Type: BuiltInString, Value: "degF"})
+	for change := int32(2); change <= 3; change++ {
+		runtime.latest().push(daNotification(itemID, change, QualityGood))
+		if count := publishNothing(t, service, channelEpoch.Add(time.Duration(change)*time.Second)); count != 0 {
+			t.Fatalf("%d notifications reported before the sampling interval passed", count)
+		}
+	}
+	notifications := publishOnce(t, service, channelEpoch.Add(5*time.Second))
+	if len(notifications) != 1 || notifications[0].Value.Value.Value != int32(3) ||
+		!notifications[0].Value.Status.HasSemanticsChanged() {
+		t.Fatal("coalescing lost the newest value or the pending semantic change")
+	}
+}
+
 // Clause 7.2: a percent deadband "is defined as the percentage of the EURange.
 // That is, it applies only to AnalogItems with an EURange Property." An item
 // without one has no range to take a percentage of, and passing the filter to
@@ -1632,6 +1730,11 @@ func TestDAReportReachesEachMonitoredItemForTheSameNode(t *testing.T) {
 // about when a value is reported, and only tryPublish takes the clock.
 func publishOnce(t *testing.T, service *SubscriptionService, now time.Time) []MonitoredItemNotification {
 	t.Helper()
+	return publishResponseAt(t, service, now).NotificationMessage.Notifications
+}
+
+func publishResponseAt(t *testing.T, service *SubscriptionService, now time.Time) PublishResponse {
+	t.Helper()
 	request := PublishRequest{Header: RequestHeader{AdditionalHeader: NullExtensionObject()}}
 	response, ready, err := service.tryPublish(context.Background(), testSession, request, nil, now)
 	if err != nil {
@@ -1640,7 +1743,7 @@ func publishOnce(t *testing.T, service *SubscriptionService, now time.Time) []Mo
 	if !ready {
 		t.Fatal("the cycle had nothing to send")
 	}
-	return response.NotificationMessage.Notifications
+	return response
 }
 
 // publishNothing runs one publishing cycle and reports how many notifications
@@ -2564,12 +2667,12 @@ func TestDisabledPublishingHoldsOnlyTheNewestValue(t *testing.T) {
 		}
 	}
 
-	// Nothing queued to send: the newest value sits in each item's own slot.
+	// The newest value sits in each item's own slot.
 	service.mu.Lock()
-	pending := len(service.subscriptions[id].pending)
+	held := len(service.subscriptions[id].heldOrder)
 	service.mu.Unlock()
-	if pending != 0 {
-		t.Fatalf("%d notifications queued while publishing was disabled", pending)
+	if held != 2 {
+		t.Fatalf("%d notifications retained for two items while publishing was disabled", held)
 	}
 
 	// Re-enabled, each item reports once, with the newest value it saw.

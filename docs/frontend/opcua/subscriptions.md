@@ -300,9 +300,11 @@ A keep-alive is not held for retransmission. 5.14.1.1 reserves that queue for
 responses that "actually contain one or more Notifications", which is the same
 distinction the clause uses to define the word NotificationMessage.
 
-Table 82's `maxNotificationsPerPublish` of zero means the client imposes no
-limit; a smaller client value tightens the server's bound. What does not fit is
-reported through `moreNotifications` rather than dropped.
+Table 82's `maxNotificationsPerPublish` of zero leaves the server's bound in
+effect. A smaller nonzero client value tightens that bound. If additional
+items are eligible to publish, the response sets `moreNotifications`.
+Each item holds its newest unsent notification until it fits in a response.
+Deleting the item discards that notification.
 
 A subscription belongs to the session that created it, and closing a session
 releases its DA groups — a closed session must not leave groups open on the
@@ -311,11 +313,10 @@ source.
 ### When the source goes away
 
 The DA core invalidates its subscription on a source disconnect. The UA
-subscription survives, but every reporting item is given a `Bad_NotConnected`
-status in the next notification, so a client **learns the source is gone rather
-than seeing the stream fall silent**. The DA subscription is released rather
-than left dangling; recovering means creating monitored items again, which
-matches the DA core's rule that resubscribing is always explicit.
+subscription survives and replaces every reporting item's unsent notification
+with `Bad_NotConnected`. The status is immediately eligible and follows the
+Publish response limit. The adapter releases the DA subscription. Clients
+recover by explicitly creating monitored items again.
 
 ## Shutting the listener down
 

@@ -1,7 +1,6 @@
 // Command subscribeprobe exercises the DA Subscribe core against a real local
-// OPC DA server. No frontend exposes Subscribe, so the probe drives the DA
-// runtime directly. It is validation tooling only and never logs a process
-// value; only DA metadata, counts, and identifiers are printed.
+// OPC DA server through the runtime interface. It logs DA metadata, counts,
+// and identifiers.
 package main
 
 import (
@@ -119,6 +118,9 @@ func runProbe(ctx context.Context, runtime opcda.Runtime, limits opcda.Limits, u
 		return fmt.Errorf("status reported %d subscriptions after unsubscribe, want 0", count)
 	}
 
+	if err := verifySubscribeDeadlines(ctx, runtime, updateRate); err != nil {
+		return err
+	}
 	if err := verifyCleanupCycles(ctx, runtime, limits, updateRate); err != nil {
 		return err
 	}
@@ -340,6 +342,44 @@ func verifyUnsubscribeStopsDelivery(ctx context.Context, runtime opcda.Runtime, 
 	if !ok || adapterErr.Code != opcda.CodeSubscriptionNotFound {
 		return fmt.Errorf("repeated Unsubscribe returned %v, want %s", err, opcda.CodeSubscriptionNotFound)
 	}
+	return nil
+}
+
+// verifySubscribeDeadlines lets a deadline expire before or during Subscribe.
+// A following device Read waits for the same DA thread to finish that command.
+func verifySubscribeDeadlines(ctx context.Context, runtime opcda.Runtime, updateRate time.Duration) error {
+	request := opcda.SubscribeRequest{Items: probeItems, RequestedUpdateRate: updateRate}
+	read := opcda.ReadRequest{Items: probeItems[:1], Source: opcda.DADataSourceDevice}
+	timeouts := []time.Duration{time.Nanosecond, 100 * time.Microsecond, time.Millisecond, 5 * time.Millisecond}
+	expired := 0
+	for index := range cleanupCycles {
+		subscribeCtx, cancel := context.WithTimeout(ctx, timeouts[index%len(timeouts)])
+		subscription, err := runtime.Subscribe(subscribeCtx, request)
+		cancel()
+		if err != nil {
+			if adapterErr, ok := opcda.AsAdapterError(err); !ok || adapterErr.Code != opcda.CodeRuntimeDeadline {
+				return fmt.Errorf("deadline trial %d returned %w", index+1, err)
+			}
+			expired++
+		} else if err := runtime.Unsubscribe(ctx, subscription.Info().ID); err != nil {
+			return fmt.Errorf("release accepted subscription in deadline trial %d: %w", index+1, err)
+		}
+		results, err := runtime.ReadBatch(ctx, read)
+		if err != nil {
+			return fmt.Errorf("device Read after deadline trial %d: %w", index+1, err)
+		}
+		if len(results) != 1 || results[0].Value == nil {
+			return fmt.Errorf("device Read after deadline trial %d returned no value", index+1)
+		}
+		if count := runtime.Status(ctx).SubscriptionCount; count != 0 {
+			return fmt.Errorf("deadline trial %d left %d subscriptions active", index+1, count)
+		}
+	}
+	if expired == 0 {
+		return errors.New("no Subscribe deadline expired during validation")
+	}
+	fmt.Printf("SUBSCRIBE_REAL_DA_DEADLINE_PASS attempts=%d expired=%d accepted=%d active=0 valuesLogged=false\n",
+		cleanupCycles, expired, cleanupCycles-expired)
 	return nil
 }
 

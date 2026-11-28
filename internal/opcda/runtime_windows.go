@@ -598,37 +598,36 @@ func (r *windowsRuntime) Subscribe(ctx context.Context, request SubscribeRequest
 		return nil, err
 	}
 
-	type response struct {
-		subscription Subscription
-		err          error
-	}
-	responses := make(chan response, 1)
-	deadline := func() response {
-		return response{err: &AdapterError{
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	accepted := make(chan *daSubscription)
+	failures := make(chan error, 1)
+	deadline := func() error {
+		return &AdapterError{
 			Code:    CodeRuntimeDeadline,
 			Message: "Subscribe deadline exceeded",
 			Cause:   ctx.Err(),
-		}}
+		}
 	}
 	command := daThreadCommand{
 		context: ctx,
 		name:    "Subscribe",
-		skipped: func() { responses <- deadline() },
+		skipped: func() { failures <- deadline() },
 		run: func(session *daThreadSession) {
 			if session.server == nil || session.subscriptions == nil {
-				responses <- response{err: NewAdapterError(CodeRuntimeUnavailable, "OPC DA runtime is not connected")}
+				failures <- NewAdapterError(CodeRuntimeUnavailable, "OPC DA runtime is not connected")
 				return
 			}
 			if session.subscribeCapability != "supported" {
 				if session.subscribeCapability == "unsupported" {
-					responses <- response{err: NewAdapterError(CodeSubscribeUnsupported, "OPC DA server does not support callback subscriptions")}
+					failures <- NewAdapterError(CodeSubscribeUnsupported, "OPC DA server does not support callback subscriptions")
 					return
 				}
-				responses <- response{err: NewAdapterError(CodeRuntimeUnavailable, "OPC DA Subscribe is unavailable")}
+				failures <- NewAdapterError(CodeRuntimeUnavailable, "OPC DA Subscribe is unavailable")
 				return
 			}
 			if len(session.subscriptions) >= r.config.Limits.MaxSubscriptions {
-				responses <- response{err: NewAdapterError(CodeSubscriptionLimit, "subscription limit exceeded")}
+				failures <- NewAdapterError(CodeSubscriptionLimit, "subscription limit exceeded")
 				return
 			}
 			session.nextSubscriptionSequence++
@@ -636,43 +635,48 @@ func (r *windowsRuntime) Subscribe(ctx context.Context, request SubscribeRequest
 			subscription, err := session.createSubscription(id, request, r.config.Limits.ArrayLimits())
 			if err != nil {
 				r.handleOperationFailure(session, err)
-				responses <- response{err: err}
+				failures <- err
 				return
 			}
-			// An advised DA group must never outlive the caller that asked for
-			// it, so a group created after the deadline is torn down here on the
-			// owning thread rather than left unowned in the session.
-			if ctx.Err() != nil {
-				subscription.teardown(session.server, NewAdapterError(
-					CodeSubscriptionInvalidated,
-					"OPC DA subscription was removed because Subscribe exceeded its deadline",
-				))
-				responses <- deadline()
-				return
-			}
-			session.subscriptions[id] = subscription
-			r.updateSubscriptionCount(len(session.subscriptions))
-			responses <- response{subscription: subscription}
+			r.handoffSubscription(ctx, session, subscription, accepted)
 		},
 	}
 	if err := r.enqueue(ctx, command); err != nil {
 		return nil, err
 	}
 	select {
-	case response := <-responses:
-		return response.subscription, response.err
+	case subscription := <-accepted:
+		return subscription, nil
+	case err := <-failures:
+		return nil, err
 	case <-r.stopped:
 		return nil, NewAdapterError(CodeRuntimeUnavailable, "OPC DA runtime stopped before Subscribe completed")
 	case <-ctx.Done():
-		// A subscription the DA thread finished creating is handed over rather
-		// than orphaned; otherwise the command tears it down itself.
 		select {
-		case response := <-responses:
-			return response.subscription, response.err
+		case err := <-failures:
+			return nil, err
 		default:
-			return nil, deadline().err
+			return nil, deadline()
 		}
 	}
+}
+
+// handoffSubscription runs on the DA thread. The unbuffered send transfers
+// ownership to a receiving caller, and cancellation releases an unclaimed group.
+func (r *windowsRuntime) handoffSubscription(ctx context.Context, session *daThreadSession, subscription *daSubscription, accepted chan<- *daSubscription) {
+	if ctx.Err() == nil {
+		session.subscriptions[subscription.id] = subscription
+		r.updateSubscriptionCount(len(session.subscriptions))
+		select {
+		case accepted <- subscription:
+			return
+		case <-ctx.Done():
+		}
+		delete(session.subscriptions, subscription.id)
+	}
+	subscription.teardown(session.server, NewAdapterError(CodeSubscriptionInvalidated,
+		"OPC DA subscription was removed because Subscribe ended before delivery"))
+	r.updateSubscriptionCount(len(session.subscriptions))
 }
 
 func (r *windowsRuntime) Unsubscribe(ctx context.Context, id SubscriptionID) error {

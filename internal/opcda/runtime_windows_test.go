@@ -4,6 +4,7 @@ package opcda
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -68,6 +69,97 @@ func TestConnectionGenerationMonotonicallyInvalidatesHandles(t *testing.T) {
 	}
 	if _, ok := session.registrations.get("A"); ok {
 		t.Fatal("first-generation handle survived reconnect")
+	}
+}
+
+type subscribeHandoffTestContext struct {
+	context.Context
+	checked chan struct{}
+	once    sync.Once
+}
+
+func (ctx *subscribeHandoffTestContext) Err() error {
+	err := ctx.Context.Err()
+	ctx.once.Do(func() { close(ctx.checked) })
+	return err
+}
+
+func TestSubscribeHandoffReleasesGroupWhenCallerLeaves(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	checked := &subscribeHandoffTestContext{Context: ctx, checked: make(chan struct{})}
+	runtime := &windowsRuntime{}
+	session := &daThreadSession{subscriptions: make(map[SubscriptionID]*daSubscription)}
+	subscription := &daSubscription{id: "sub-1-1", pending: newPendingUpdates(0)}
+	accepted := make(chan *daSubscription)
+	finished := make(chan struct{})
+
+	// Stop the DA thread at the status update after its initial context
+	// check. The caller leaves before the group can be handed over.
+	runtime.statusMu.Lock()
+	go func() {
+		runtime.handoffSubscription(checked, session, subscription, accepted)
+		close(finished)
+	}()
+	select {
+	case <-checked.checked:
+	case <-time.After(5 * time.Second):
+		runtime.statusMu.Unlock()
+		t.Fatal("the subscription handoff did not start")
+	}
+	cancel()
+	runtime.statusMu.Unlock()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the abandoned group blocked the DA thread")
+	}
+	if len(session.subscriptions) != 0 || runtime.Status(context.Background()).SubscriptionCount != 0 {
+		t.Fatal("the abandoned group was left active")
+	}
+	select {
+	case <-subscription.Done():
+		if err, ok := AsAdapterError(subscription.Err()); !ok || err.Code != CodeSubscriptionInvalidated {
+			t.Fatalf("invalidation error = %v", subscription.Err())
+		}
+	default:
+		t.Fatal("the abandoned group was not invalidated")
+	}
+}
+
+func TestSubscribeHandoffKeepsGroupAcceptedByCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtime := &windowsRuntime{}
+	session := &daThreadSession{subscriptions: make(map[SubscriptionID]*daSubscription)}
+	subscription := &daSubscription{id: "sub-1-1", pending: newPendingUpdates(0)}
+	accepted := make(chan *daSubscription)
+	finished := make(chan struct{})
+	go func() {
+		runtime.handoffSubscription(ctx, session, subscription, accepted)
+		close(finished)
+	}()
+	select {
+	case actual := <-accepted:
+		if actual != subscription {
+			t.Fatal("the caller accepted a different subscription")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the subscription was not delivered")
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the DA thread did not finish the subscription handoff")
+	}
+	if session.subscriptions[subscription.id] != subscription || runtime.Status(context.Background()).SubscriptionCount != 1 {
+		t.Fatal("the accepted group was removed when the request ended")
+	}
+	select {
+	case <-subscription.Done():
+		t.Fatal("the accepted group was invalidated")
+	default:
 	}
 }
 

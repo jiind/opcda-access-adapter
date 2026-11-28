@@ -111,6 +111,12 @@ and can retry the deletion. Deleting a monitor with no change to active DA
 registrations reuses the current group, including when the group limit is
 reached. These paths have regression coverage.
 
+The Windows fixture passed a DA outage within one OPC UA session on 386 and
+amd64. Read and Publish carried no stale values. The source returned a live
+value after reconnect, the refused Write was absent, and notifications resumed
+after explicit monitor creation.
+[Recovery result](validation/compatibility.md#opc-ua-recovery-within-one-session)
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

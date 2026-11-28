@@ -41,18 +41,20 @@ func main() {
 		"expect Write to be enabled and drive the subscription change scenario")
 	arrayFixture := flag.Bool("array-fixture", false, "verify the real DA fixture's array items")
 	arrayWriterURL := flag.String("array-writer-url", "", "loopback HTTP writer for the real DA fixture")
+	reconnectSignals := flag.String("reconnect-signals", "", "controller directory for a real DA fixture outage")
 	timeout := flag.Duration("timeout", time.Minute, "bounded scenario deadline")
 	flag.Parse()
 	if flag.NArg() != 0 || *endpointURL == "" || *policyURI == "" ||
-		*timeout <= 0 || *timeout > maximumProbeTimeout || (!*arrayFixture && *arrayWriterURL != "") {
+		*timeout <= 0 || *timeout > maximumProbeTimeout || (!*arrayFixture && *arrayWriterURL != "") ||
+		(*reconnectSignals != "" && (!*arrayFixture || !*writeEnabled)) {
 		fmt.Fprintln(os.Stderr,
-			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-array-fixture] [-array-writer-url URL] [-timeout DURATION]")
+			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-write-enabled] [-array-fixture] [-array-writer-url URL] [-reconnect-signals DIR] [-timeout DURATION]")
 		os.Exit(2)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled, *arrayFixture, *arrayWriterURL); err != nil {
+	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled, *arrayFixture, *arrayWriterURL, *reconnectSignals); err != nil {
 		fmt.Fprintf(os.Stderr, "OPCUA_REAL_DA_FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -92,7 +94,7 @@ type client struct {
 	policyURI string
 }
 
-func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled, arrayFixture bool, arrayWriterURL string) error {
+func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled, arrayFixture bool, arrayWriterURL, reconnectSignals string) error {
 	deadline, _ := ctx.Deadline()
 	conn, err := dialWhenReady(ctx, address)
 	if err != nil {
@@ -117,7 +119,11 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 	fmt.Printf("opcua hello acknowledged receiveBuffer=%d sendBuffer=%d\n",
 		ack.ReceiveBufferSize, ack.SendBufferSize)
 
-	token, err := c.openChannel()
+	channelLifetime := uint32(60_000)
+	if reconnectSignals != "" {
+		channelLifetime = uint32(maximumProbeTimeout / time.Millisecond)
+	}
+	token, err := c.openChannel(channelLifetime)
 	if err != nil {
 		return err
 	}
@@ -213,6 +219,11 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 			return err
 		}
 		subscribed = true
+	}
+	if reconnectSignals != "" {
+		if err := c.validateFixtureRecovery(ctx, token, session, reconnectSignals); err != nil {
+			return err
+		}
 	}
 	fmt.Printf(
 		"OPCUA_REAL_DA_PASS endpoint=verified session=activated items=%d read=ok subscription=%t valuesLogged=false\n",
@@ -611,7 +622,7 @@ func (c *client) createSubscription(token opcua.ChannelSecurityToken, session op
 		Header:                      requestHeader(session, 51),
 		RequestedPublishingInterval: 250,
 		RequestedMaxKeepAliveCount:  3,
-		RequestedLifetimeCount:      30,
+		RequestedLifetimeCount:      240,
 		MaxNotificationsPerPublish:  maxNotifications,
 		PublishingEnabled:           true,
 		Priority:                    priority,
@@ -894,7 +905,7 @@ func (c *client) hello(endpointURL string) (opcua.Acknowledge, error) {
 	return opcua.DecodeAcknowledge(response, c.limits)
 }
 
-func (c *client) openChannel() (opcua.ChannelSecurityToken, error) {
+func (c *client) openChannel(lifetime uint32) (opcua.ChannelSecurityToken, error) {
 	service, err := opcua.NewEncoder(c.limits)
 	if err != nil {
 		return opcua.ChannelSecurityToken{}, err
@@ -909,7 +920,7 @@ func (c *client) openChannel() (opcua.ChannelSecurityToken, error) {
 		ClientProtocolVersion: opcua.ProtocolVersion,
 		RequestType:           opcua.TokenRequestIssue,
 		SecurityMode:          opcua.SecurityModeNone,
-		RequestedLifetime:     60_000,
+		RequestedLifetime:     lifetime,
 	})
 	serviceBody, err := service.Bytes()
 	if err != nil {
@@ -1271,36 +1282,10 @@ func (c *client) browseForItems(token opcua.ChannelSecurityToken, session, folde
 }
 
 func (c *client) readItem(token opcua.ChannelSecurityToken, session, node opcua.NodeID) error {
-	encoder, err := opcua.NewEncoder(c.limits)
+	result, err := c.readDataValue(token, session, node, opcua.AttributeValue, opcua.TimestampsBoth, 40)
 	if err != nil {
 		return err
 	}
-	encoder.WriteReadRequest(opcua.ReadRequest{
-		Header:             requestHeader(session, 40),
-		TimestampsToReturn: opcua.TimestampsBoth,
-		NodesToRead: []opcua.ReadValueID{{
-			NodeID: node, AttributeID: opcua.AttributeValue,
-		}},
-	})
-	serviceBody, err := encoder.Bytes()
-	if err != nil {
-		return err
-	}
-	identifier, decoder, err := c.call(token, 40, serviceBody)
-	if err != nil {
-		return fmt.Errorf("read: %w", err)
-	}
-	if identifier != opcua.ReadResponseEncodingID {
-		return fmt.Errorf("read answered with service %d", identifier)
-	}
-	response, err := decoder.ReadReadResponse()
-	if err != nil {
-		return err
-	}
-	if len(response.Results) != 1 {
-		return fmt.Errorf("read returned %d results", len(response.Results))
-	}
-	result := response.Results[0]
 	// The status comes from the source's quality through the Part 8 mapping, so
 	// a non-Good status is data rather than a failure. What must hold is that a
 	// good status carries a value and a bad one does not.
@@ -1469,34 +1454,40 @@ func (c *client) validateItemProperties(token opcua.ChannelSecurityToken, sessio
 // value without interpreting either.
 func (c *client) readAttributeValue(token opcua.ChannelSecurityToken, session, node opcua.NodeID,
 	attributeID uint32, handle uint32) (opcua.StatusCode, opcua.Variant, error) {
+	result, err := c.readDataValue(token, session, node, attributeID, opcua.TimestampsServer, handle)
+	return result.Status, result.Value, err
+}
+
+func (c *client) readDataValue(token opcua.ChannelSecurityToken, session, node opcua.NodeID,
+	attributeID uint32, timestamps opcua.TimestampsToReturn, handle uint32) (opcua.DataValue, error) {
 	encoder, err := opcua.NewEncoder(c.limits)
 	if err != nil {
-		return 0, opcua.Variant{}, err
+		return opcua.DataValue{}, err
 	}
 	encoder.WriteReadRequest(opcua.ReadRequest{
 		Header:             requestHeader(session, handle),
-		TimestampsToReturn: opcua.TimestampsServer,
+		TimestampsToReturn: timestamps,
 		NodesToRead:        []opcua.ReadValueID{{NodeID: node, AttributeID: attributeID}},
 	})
 	serviceBody, err := encoder.Bytes()
 	if err != nil {
-		return 0, opcua.Variant{}, err
+		return opcua.DataValue{}, err
 	}
 	identifier, decoder, err := c.call(token, handle, serviceBody)
 	if err != nil {
-		return 0, opcua.Variant{}, fmt.Errorf("read attribute %d: %w", attributeID, err)
+		return opcua.DataValue{}, fmt.Errorf("read attribute %d: %w", attributeID, err)
 	}
 	if identifier != opcua.ReadResponseEncodingID {
-		return 0, opcua.Variant{}, fmt.Errorf("read answered with service %d", identifier)
+		return opcua.DataValue{}, fmt.Errorf("read answered with service %d", identifier)
 	}
 	response, err := decoder.ReadReadResponse()
 	if err != nil {
-		return 0, opcua.Variant{}, err
+		return opcua.DataValue{}, err
 	}
 	if len(response.Results) != 1 {
-		return 0, opcua.Variant{}, fmt.Errorf("read returned %d results", len(response.Results))
+		return opcua.DataValue{}, fmt.Errorf("read returned %d results", len(response.Results))
 	}
-	return response.Results[0].Status, response.Results[0].Value, nil
+	return response.Results[0], nil
 }
 
 // The node identifiers Annex A names for the address space a wrapper builds.

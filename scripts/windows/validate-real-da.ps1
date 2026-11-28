@@ -313,21 +313,30 @@ function Test-OPCUAFrontend {
     $port = if ($AdapterArch -eq '386') { 18751 } else { 18752 }
     $adapter = $null
     $arrayWriter = $null
+    $probe = $null
+    $signals = Join-Path $script:WorkingDirectory 'opcua-reconnect'
+    New-Item -ItemType Directory -Path $signals | Out-Null
+    $stdout = Join-Path $script:WorkingDirectory 'opcua-probe.stdout.log'
+    $stderr = Join-Path $script:WorkingDirectory 'opcua-probe.stderr.log'
     try {
         $arrayWriter = Start-Adapter -WriteEnabled $true -Label 'opcua-array-writer'
         $null = Wait-Connected -TimeoutSeconds 30
         $adapter = Start-OPCUAAdapter -Port $port -WriteEnabled $true -Label 'opcua'
-        Invoke-NativeProcess -FilePath $script:OPCUAProbeExecutable -ArgumentList @(
+        $arguments = @(
             '-address', "127.0.0.1:$port",
             '-endpoint-url', "opc.tcp://127.0.0.1:$port",
             '-security-policy-uri', 'urn:validation:security-policy:none',
             '-write-enabled',
             '-array-fixture',
             '-array-writer-url', $script:BaseURL,
+            '-reconnect-signals', ('"{0}"' -f $signals),
             # The subscription scenario waits on real source notifications, so
             # it needs a longer bound than the read-only path.
             '-timeout', '150s'
-        ) -TimeoutSeconds 180
+        )
+        $probe = Start-Process -FilePath $script:OPCUAProbeExecutable -ArgumentList $arguments -NoNewWindow -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        Invoke-FixtureRecovery -Process $probe -Signals $signals -Frontend 'OPC UA'
         $listeners = @(Get-NetTCPConnection -State Listen -OwningProcess $adapter.Id -ErrorAction SilentlyContinue)
         Assert-True ($listeners.Count -eq 1) 'OPC UA adapter did not expose exactly one TCP listener'
         Assert-True ($listeners[0].LocalAddress -eq '127.0.0.1' -and [int]$listeners[0].LocalPort -eq $port) `
@@ -335,6 +344,12 @@ function Test-OPCUAFrontend {
         Write-Host "OPCUA_FRONTEND_PASS arch=$AdapterArch securityMode=None writeEnabled=true subscription=true valuesLogged=false"
     }
     finally {
+        Stop-Adapter $probe
+        foreach ($log in @($stdout, $stderr)) {
+            if (Test-Path -LiteralPath $log -PathType Leaf) {
+                Get-Content -LiteralPath $log | Write-Host
+            }
+        }
         Stop-Adapter $adapter
         Stop-Adapter $arrayWriter
         Stop-ServerProcesses
@@ -906,7 +921,7 @@ function Test-GuidedSetupWindowsServiceForFrontend {
     }
 }
 
-function Wait-MCPProbeSignal {
+function Wait-FixtureProbeSignal {
     param([Diagnostics.Process]$Process, [string]$Path, [int]$TimeoutSeconds)
 
     $name = [IO.Path]::GetFileName($Path)
@@ -916,11 +931,26 @@ function Wait-MCPProbeSignal {
             return
         }
         if ($Process.HasExited) {
-            throw "MCP probe exited before signaling $name"
+            throw "fixture probe exited before signaling $name"
         }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "MCP probe timed out awaiting $name"
+    throw "fixture probe timed out awaiting $name"
+}
+
+function Invoke-FixtureRecovery {
+    param([Diagnostics.Process]$Process, [string]$Signals, [string]$Frontend)
+
+    $null = $Process.Handle
+    Wait-FixtureProbeSignal -Process $Process -Path (Join-Path $Signals 'subscribed') -TimeoutSeconds 180
+    Unregister-Server
+    New-Item -ItemType File -Path (Join-Path $Signals 'unavailable') | Out-Null
+    Wait-FixtureProbeSignal -Process $Process -Path (Join-Path $Signals 'invalidated') -TimeoutSeconds 45
+    Register-Server
+    New-Item -ItemType File -Path (Join-Path $Signals 'available') | Out-Null
+
+    Assert-True ($Process.WaitForExit(60000)) "$Frontend recovery probe timed out"
+    Assert-True ($Process.ExitCode -eq 0) "$Frontend probe failed with exit code $($Process.ExitCode)"
 }
 
 # Test-MCPFrontend는 독립 Python 클라이언트로 실제 DA의 MCP stdio 경로를 검증한다.
@@ -942,15 +972,7 @@ function Test-MCPFrontend {
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 
         # Keep the MCP stdio session open during the fixture outage.
-        Wait-MCPProbeSignal -Process $probe -Path (Join-Path $signals 'subscribed') -TimeoutSeconds 180
-        Unregister-Server
-        New-Item -ItemType File -Path (Join-Path $signals 'unavailable') | Out-Null
-        Wait-MCPProbeSignal -Process $probe -Path (Join-Path $signals 'invalidated') -TimeoutSeconds 45
-        Register-Server
-        New-Item -ItemType File -Path (Join-Path $signals 'available') | Out-Null
-
-        Assert-True ($probe.WaitForExit(60000)) 'MCP recovery probe timed out'
-        Assert-True ($probe.ExitCode -eq 0) "MCP probe failed with exit code $($probe.ExitCode)"
+        Invoke-FixtureRecovery -Process $probe -Signals $signals -Frontend 'MCP'
     }
     finally {
         if ($null -ne $probe -and -not $probe.HasExited) {

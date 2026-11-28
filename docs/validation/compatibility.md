@@ -9,6 +9,7 @@
 | Four frontends on the Windows Graybox installation | [2026-11-28 validation](#graybox-four-frontend-validation-on-2026-11-28) |
 | One installed third-party DA server | [Graybox result](#recorded-result-graybox-gray-simulator) |
 | Source-built DA fixture | [Fixture results](#recorded-result-opc-foundation-da-205a-fixture) |
+| Two OPC UA MonitoredItems for the same DA ItemID | [Shared ItemID result](#opc-ua-subscription-result) |
 | Independent UA clients | [Client results](#third-party-opc-ua-client-interoperability) |
 | Long-running Read resource bounds | [Soak result](#long-running-resource-result) |
 | Running another authorized test | [Procedure](#real-da-validation-procedure) |
@@ -419,6 +420,14 @@ and x64/amd64. On top of the earlier UA result, each architecture passed:
 Write is enabled for the OPC UA scenario so those changes can be induced; the
 fixture's `Test` items are static and would otherwise show only one snapshot.
 The write-disabled default stays covered by the HTTP and gRPC scenarios.
+
+On 2026-11-28, PR #250 head `a8eeaa6b1dd6bce4be09c3ad2384ac91ce207621`
+passed with the pinned fixture on Windows Server 2025, on both 386 and amd64.
+One create request for a writable `VT_R4` item returned `Bad_InvalidArgument`
+for the repeated client handle and distinct MonitoredItem IDs for the two
+accepted handles. Both handles received the initial value, two values changed
+through typed OPC UA Write, and the restored original value through Publish.
+The probe deleted the subscription. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46156299684)
 
 ### DA error code result
 

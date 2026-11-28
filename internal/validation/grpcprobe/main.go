@@ -258,7 +258,33 @@ func validateFixtureArrays(ctx context.Context, client opcdav1.OPCDAAccessClient
 			Dimensions:      original.ArrayValue.Dimensions,
 			Elements:        fixture.changed,
 		}
+		streamCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		stream, err := client.Subscribe(streamCtx, &opcdav1.DASubscribeRequest{
+			Items: []*opcdav1.DASubscribeItem{{ItemId: fixture.itemID}}, RequestedUpdateRateMs: 250,
+		})
+		if err != nil {
+			cancel()
+			return fmt.Errorf("open array Subscribe stream: %w", err)
+		}
+		created, err := stream.Recv()
+		if err != nil {
+			cancel()
+			return fmt.Errorf("receive array Subscribe creation: %w", err)
+		}
+		group := created.GetCreated()
+		if group.GetActiveItemCount() != 1 || len(group.GetItems()) != 1 || group.Items[0].GetItemId() != fixture.itemID {
+			cancel()
+			return fmt.Errorf("array Subscribe did not activate the requested item")
+		}
+		if err := receiveFixtureArray(stream, fixture.itemID, original.CanonicalDataType.Raw, original.ArrayValue); err != nil {
+			cancel()
+			return fmt.Errorf("initial array callback: %w", err)
+		}
+
 		changeErr := write(changed)
+		if changeErr == nil {
+			changeErr = receiveFixtureArray(stream, fixture.itemID, original.CanonicalDataType.Raw, changed)
+		}
 		if changeErr == nil {
 			_, changeErr = read(fixture.changed)
 		}
@@ -266,12 +292,41 @@ func validateFixtureArrays(ctx context.Context, client opcdav1.OPCDAAccessClient
 		if restoreErr == nil {
 			_, restoreErr = read(fixture.original)
 		}
+		if restoreErr == nil && changeErr == nil {
+			restoreErr = receiveFixtureArray(stream, fixture.itemID, original.CanonicalDataType.Raw, original.ArrayValue)
+		}
+		cancel()
 		if err := errors.Join(changeErr, restoreErr); err != nil {
 			return err
 		}
+		if err := waitForSubscriptionRelease(ctx, client); err != nil {
+			return err
+		}
 	}
-	fmt.Printf("GRPC_REAL_DA_ARRAY_PASS variants=2 shape=true writeRoundTrip=%t valuesLogged=false\n", writeEnabled)
+	fmt.Printf("GRPC_REAL_DA_ARRAY_PASS variants=2 shape=true writeRoundTrip=%t changeNotifications=%t valuesLogged=false\n", writeEnabled, writeEnabled)
 	return nil
+}
+
+func receiveFixtureArray(stream opcdav1.OPCDAAccess_SubscribeClient, itemID string, rawType uint32, expected *opcdav1.DAArrayValue) error {
+	for {
+		message, err := stream.Recv()
+		if err != nil {
+			return fmt.Errorf("receive array callback: %w", err)
+		}
+		update := message.GetUpdate()
+		if update == nil || len(update.Values) > 1 {
+			return fmt.Errorf("array callback had an unexpected response shape")
+		}
+		for _, value := range update.Values {
+			if !value.GetOk() || value.GetItemId() != itemID || value.GetValue() != nil || value.GetArrayValue() == nil ||
+				value.GetDataType().GetRaw() != rawType || value.GetCanonicalDataType().GetRaw() != rawType {
+				return fmt.Errorf("array callback lost source identity or VARTYPE")
+			}
+			if proto.Equal(value.GetArrayValue(), expected) {
+				return nil
+			}
+		}
+	}
 }
 
 func fixtureI4s(values ...int32) []*opcdav1.DAScalarValue {
@@ -384,6 +439,10 @@ func validateSubscribeStream(ctx context.Context, client opcdav1.OPCDAAccessClie
 
 	// Closing the stream must release the DA group without an explicit RPC.
 	cancelStream()
+	return waitForSubscriptionRelease(ctx, client)
+}
+
+func waitForSubscriptionRelease(ctx context.Context, client opcdav1.OPCDAAccessClient) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		statusAfter, err := client.Status(ctx, &opcdav1.DAStatusRequest{})

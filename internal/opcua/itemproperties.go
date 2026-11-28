@@ -706,17 +706,12 @@ func otherPropertyNode(itemID opcda.DAItemID, property opcda.AvailableProperty, 
 		}
 	}
 	node := &Node{
-		ID:             OtherPropertyNodeID(itemID, property.ID),
-		Class:          NodeClassVariable,
-		BrowseName:     QualifiedName{Namespace: AdapterNamespaceIndex, Name: name},
-		DisplayName:    LocalizedText{Text: name},
-		TypeDefinition: NumericNodeID(0, NodeIDPropertyType),
-		DataType:       NumericNodeID(0, NodeIDBaseDataType),
-		// A.3.1.4 gives an array-valued property ValueRank
-		// OneOrMoreDimensions. A DA source does not declare how many
-		// dimensions an array property has before it is read, so the rank
-		// says "one or more" rather than naming a count that could be wrong.
-		ValueRank:         valueRankFor(property.VarType),
+		ID:                OtherPropertyNodeID(itemID, property.ID),
+		Class:             NodeClassVariable,
+		BrowseName:        QualifiedName{Namespace: AdapterNamespaceIndex, Name: name},
+		DisplayName:       LocalizedText{Text: name},
+		TypeDefinition:    NumericNodeID(0, NodeIDPropertyType),
+		DataType:          NumericNodeID(0, NodeIDBaseDataType),
 		ItemID:            itemID,
 		AccessLevel:       AccessLevelCurrentRead,
 		AccessRightsKnown: true,
@@ -730,12 +725,7 @@ func otherPropertyNode(itemID opcda.DAItemID, property opcda.AvailableProperty, 
 		node.OwnItemID = true
 		node.AccessLevel = AccessLevelCurrentRead | AccessLevelCurrentWrite
 	}
-	if dataType, ok := DataTypeFor(property.VarType); ok {
-		if id, resolved := DataTypeNodeID(dataType); resolved {
-			node.DataType = id
-			node.DataTypeKnown = true
-		}
-	}
+	applyDAVariableType(node, property.VarType)
 	return node
 }
 
@@ -894,15 +884,4 @@ func (s *AddressSpace) NoteScanRate(itemID opcda.DAItemID, milliseconds float64)
 	}
 	item.MinimumSamplingInterval = milliseconds
 	item.MinimumSamplingIntervalKnown = true
-}
-
-// valueRankFor reports the ValueRank a DA property's VARTYPE calls for.
-// A.3.1.4 exposes an array-valued property with OneOrMoreDimensions, which is
-// the rank for an array whose dimension count is not declared -- and a DA
-// source declares none until the value is read.
-func valueRankFor(varType opcda.DAVarType) int32 {
-	if varType.IsArray() {
-		return ValueRankOneOrMoreDimensions
-	}
-	return ValueRankScalar
 }

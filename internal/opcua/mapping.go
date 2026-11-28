@@ -40,14 +40,28 @@ const (
 // one value. Deriving both answers from the type the adapter actually produces
 // removes the possibility rather than adding three special cases.
 //
-// Arrays and by-reference variants are rejected here. Table A.2 maps VT_ARRAY
-// to an array of the mapped element type, but the DA core does not decode
-// arrays, so claiming the mapping would overstate what the adapter can carry.
+// This maps scalar types. Variable metadata uses applyDAVariableType to
+// describe an array through its element DataType and separate ValueRank.
 func DataTypeFor(varType opcda.DAVarType) (DataType, bool) {
 	if varType.IsArray() || varType.IsByRef() {
 		return "", false
 	}
 	return dataTypeFromTableA2(varType.DecodesAs())
+}
+
+// applyDAVariableType sets the metadata from the DA VARTYPE. Part 8 A.3.1.3
+// and A.3.1.4 put the array flag in ValueRank and its element type in DataType.
+func applyDAVariableType(node *Node, varType opcda.DAVarType) {
+	node.ValueRank = ValueRankScalar
+	if varType.IsArray() {
+		node.ValueRank = ValueRankOneOrMoreDimensions
+	}
+	if dataType, ok := DataTypeFor(varType &^ opcda.VTArray); ok {
+		if id, resolved := DataTypeNodeID(dataType); resolved {
+			node.DataType = id
+			node.DataTypeKnown = true
+		}
+	}
 }
 
 // dataTypeFromTableA2 is the transcription of the table itself, with no

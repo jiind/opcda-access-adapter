@@ -62,8 +62,7 @@ func TestDataTypeMappingRejectsTypesTheSpecDoesNotList(t *testing.T) {
 			t.Fatalf("%s was mapped to %s despite having no Table A.2 row", varType, got)
 		}
 	}
-	// The DA core decodes no arrays or by-reference variants, so claiming the
-	// Table A.2 array mapping would overstate what the adapter can carry.
+	// Array rank belongs to Variable metadata. This helper maps scalar types.
 	if _, ok := DataTypeFor(opcda.VTI4 | opcda.VTArray); ok {
 		t.Fatal("an array VARTYPE was mapped")
 	}

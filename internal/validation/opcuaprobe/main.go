@@ -266,6 +266,29 @@ func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session
 	if length, _, err := decoder.ReadArrayLength(1); err != nil || length != 0 || decoder.Remaining() != 0 {
 		return fmt.Errorf("UA array Read carried unexpected trailing data")
 	}
+	for _, fixture := range []struct {
+		node     opcua.NodeID
+		dataType uint32
+	}{
+		{intNode, opcua.NodeIDInt32},
+		{stringNode, opcua.NodeIDString},
+	} {
+		status, value, err := c.readAttributeValue(token, session, fixture.node, opcua.AttributeValueRank, 57)
+		if err != nil {
+			return err
+		}
+		if status != opcua.StatusGood || value.Type != opcua.BuiltInInt32 || value.Value != opcua.ValueRankOneOrMoreDimensions {
+			return fmt.Errorf("UA array node did not report ValueRank OneOrMoreDimensions")
+		}
+		status, value, err = c.readAttributeValue(token, session, fixture.node, opcua.AttributeDataType, 58)
+		if err != nil {
+			return err
+		}
+		dataType, ok := value.Value.(opcua.NodeID)
+		if status != opcua.StatusGood || !ok || !dataType.Equal(opcua.NumericNodeID(0, fixture.dataType)) {
+			return fmt.Errorf("UA array node did not report its element DataType")
+		}
+	}
 	if writeEnabled {
 		status, err := c.writeVariant(token, session, intNode, opcua.Variant{
 			Type: opcua.BuiltInInt32, IsArray: true, Value: []int32{2, -7, 31},
@@ -276,8 +299,15 @@ func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session
 		if status != opcua.StatusBadTypeMismatch {
 			return fmt.Errorf("UA array Write returned %s, want Bad_TypeMismatch", status.Hex())
 		}
+		status, err = c.writeVariant(token, session, intNode, opcua.Variant{Type: opcua.BuiltInInt32, Value: int32(2)})
+		if err != nil {
+			return err
+		}
+		if status != opcua.StatusBadTypeMismatch {
+			return fmt.Errorf("UA scalar Write to an array returned %s, want Bad_TypeMismatch", status.Hex())
+		}
 	}
-	fmt.Printf("OPCUA_REAL_DA_ARRAY_PASS variants=2 elements=ordered arrayWriteRefused=%t valuesLogged=false\n", writeEnabled)
+	fmt.Printf("OPCUA_REAL_DA_ARRAY_PASS variants=2 elements=ordered nodeMetadata=true arrayWriteRefused=%t valuesLogged=false\n", writeEnabled)
 	return nil
 }
 

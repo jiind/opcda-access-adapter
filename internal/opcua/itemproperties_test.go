@@ -912,6 +912,9 @@ func TestUnnamedDAPropertiesBecomePropertiesOfTheItem(t *testing.T) {
 		t.Errorf("EU Info has ValueRank %d, want OneOrMoreDimensions (%d)",
 			euInfo.ValueRank, ValueRankOneOrMoreDimensions)
 	}
+	if !euInfo.DataTypeKnown || !euInfo.DataType.Equal(NumericNodeID(0, NodeIDString)) {
+		t.Errorf("EU Info DataType = %s, want String", euInfo.DataType)
+	}
 	for _, unwanted := range []string{"Access Rights", "Item Description", "Scan Rate"} {
 		if names[unwanted] {
 			t.Errorf("%s was exposed as a property", unwanted)

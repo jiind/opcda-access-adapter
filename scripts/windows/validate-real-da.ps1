@@ -1161,7 +1161,13 @@ function Test-HTTPRegistrationLimit {
 }
 
 function Read-ArrayFixtureValue {
-    param([string]$ItemID, [string]$ElementType, [int]$ElementCode, [object[]]$Elements)
+    param(
+        [string]$ItemID,
+        [string]$ElementType,
+        [int]$ElementCode,
+        [object[]]$Elements,
+        [object[]]$Dimensions
+    )
 
     $response = Read-Items @($ItemID)
     Assert-True ($response.results.Count -eq 1) 'array Read returned a different item count'
@@ -1172,9 +1178,14 @@ function Read-ArrayFixtureValue {
         Assert-True ($type.name -ceq $ElementType -and $type.code -eq (0x2000 -bor $ElementCode) -and
             $type.array -and -not (Test-JSONProperty $type 'byRef')) 'array Read did not preserve the VARTYPE'
     }
-    Assert-True ($item.value.elementDataType.name -ceq $ElementType -and $item.value.dimensions.Count -eq 1 -and
-        $item.value.dimensions[0].lowerBound -eq 0 -and $item.value.dimensions[0].length -eq $Elements.Count) `
-        'array Read did not preserve the element type, shape or lower bound'
+    Assert-True ($item.value.elementDataType.name -ceq $ElementType -and $item.value.dimensions.Count -eq $Dimensions.Count) `
+        'array Read did not preserve the element type or rank'
+    for ($dimension = 0; $dimension -lt $Dimensions.Count; $dimension++) {
+        $actual = $item.value.dimensions[$dimension]
+        $expected = $Dimensions[$dimension]
+        Assert-True ($actual.lowerBound -eq $expected.lowerBound -and $actual.length -eq $expected.length) `
+            'array Read did not preserve a dimension length or lower bound'
+    }
     $actual = ConvertTo-Json -InputObject @($item.value.elements) -Compress
     $expected = ConvertTo-Json -InputObject $Elements -Compress
     Assert-True ($actual -ceq $expected) 'array Read did not preserve the ordered elements'
@@ -1194,28 +1205,36 @@ function Write-ArrayFixtureValue {
 }
 
 function Test-HTTPArrayRoundTrip {
-    foreach ($fixture in @(
-        @{ ItemID = 'ValidationArrays/Int32'; Type = 'VT_I4'; Code = 3; Original = @(2, -7, 31); Changed = @(-31, 7, 2) },
-        @{ ItemID = 'ValidationArrays/String'; Type = 'VT_BSTR'; Code = 8; Original = @('배열', 'fixture'); Changed = @('', '변경') }
-    )) {
-        $original = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Original
+    $fixtures = @(
+        @{ ItemID = 'ValidationArrays/Int32'; Type = 'VT_I4'; Code = 3; Original = @(2, -7, 31); Changed = @(-31, 7, 2)
+            Dimensions = @(@{ lowerBound = 0; length = 3 }) },
+        @{ ItemID = 'ValidationArrays/String'; Type = 'VT_BSTR'; Code = 8; Original = @('배열', 'fixture'); Changed = @('', '변경')
+            Dimensions = @(@{ lowerBound = 0; length = 2 }) },
+        @{ ItemID = 'ValidationArrays/Matrix'; Type = 'VT_I4'; Code = 3; Original = @(0, 1, 2, 10, 11, 12)
+            Changed = @(30, 31, 32, 40, 41, 42); Dimensions = @(@{ lowerBound = 0; length = 2 }, @{ lowerBound = 0; length = 3 }) },
+        @{ ItemID = 'ValidationArrays/OffsetMatrix'; Type = 'VT_I4'; Code = 3; Original = @(0, 1, 2, 10, 11, 12)
+            Changed = @(30, 31, 32, 40, 41, 42); Dimensions = @(@{ lowerBound = 1; length = 2 }, @{ lowerBound = -2; length = 3 }) }
+    )
+    foreach ($fixture in $fixtures) {
+        $original = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Original $fixture.Dimensions
         $changed = @{ elementDataType = $original.elementDataType; dimensions = $original.dimensions; elements = $fixture.Changed }
         try {
             Write-ArrayFixtureValue $fixture.ItemID $fixture.Type $changed
-            $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Changed
+            $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Changed $fixture.Dimensions
         }
         finally {
             Write-ArrayFixtureValue $fixture.ItemID $fixture.Type $original
         }
-        $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Original
+        $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Original $fixture.Dimensions
     }
-    Write-Host 'HTTP_REAL_DA_ARRAY_PASS variants=2 shape=true restored=true valuesLogged=false'
+    Write-Host "HTTP_REAL_DA_ARRAY_PASS items=$($fixtures.Count) multidimensional=true nonzeroLowerBounds=true restored=true valuesLogged=false"
 }
 
 function Test-HTTPSourceArrayBounds {
     $item = 'ValidationArrays/Int32'
     $initial = @(2, -7, 31)
-    $original = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
+    $originalDimensions = @(@{ lowerBound = 0; length = 3 })
+    $original = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial $originalDimensions
     $changed = @{
         elementDataType = $original.elementDataType
         dimensions = @(@{ lowerBound = -2; length = 3 })
@@ -1225,12 +1244,12 @@ function Test-HTTPSourceArrayBounds {
         Write-ArrayFixtureValue $item 'VT_I4' $changed
         # The sample device recreates a zero-based array with a length of
         # the original upper bound plus one. This fixture stores one element.
-        $null = Read-ArrayFixtureValue $item 'VT_I4' 3 @($changed.elements[0])
+        $null = Read-ArrayFixtureValue $item 'VT_I4' 3 @($changed.elements[0]) @(@{ lowerBound = 0; length = 1 })
     }
     finally {
         Write-ArrayFixtureValue $item 'VT_I4' $original
     }
-    $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
+    $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial $originalDimensions
     Write-Host 'HTTP_REAL_DA_SOURCE_ARRAY_BOUNDS_PASS requestedLowerBound=-2 sourceLowerBound=0 sourceLength=1 restored=true valuesLogged=false'
 }
 

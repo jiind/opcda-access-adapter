@@ -12,6 +12,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -209,7 +210,7 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 		if err := c.validateFixtureArraySubscription(ctx, token, session, arrayWriterURL); err != nil {
 			return err
 		}
-		fmt.Println("OPCUA_REAL_DA_ARRAY_SUBSCRIPTION_PASS initial=true changed=true restored=true valuesLogged=false")
+		fmt.Println("OPCUA_REAL_DA_ARRAY_SUBSCRIPTION_PASS initial=true changed=true multidimensional=true nonzeroLowerBoundsRefused=true restored=true valuesLogged=false")
 	}
 
 	subscribed := false
@@ -266,13 +267,12 @@ func (c *client) validateFixtureWriteDisabled(token opcua.ChannelSecurityToken, 
 func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session opcua.NodeID, items []opcua.NodeID, writeEnabled bool) error {
 	intNode := opcua.ItemNodeID(fixtureArrayItemID)
 	stringNode := opcua.ItemNodeID("ValidationArrays/String")
-	foundInt, foundString := false, false
-	for _, item := range items {
-		foundInt = foundInt || item.Equal(intNode)
-		foundString = foundString || item.Equal(stringNode)
-	}
-	if !foundInt || !foundString {
-		return fmt.Errorf("the UA Browse did not expose both fixture array nodes")
+	matrixNode := opcua.ItemNodeID(fixtureMatrixItemID)
+	offsetNode := opcua.ItemNodeID(fixtureOffsetMatrixItemID)
+	for _, node := range []opcua.NodeID{intNode, stringNode, matrixNode, offsetNode} {
+		if !slices.ContainsFunc(items, node.Equal) {
+			return fmt.Errorf("the UA Browse did not expose a fixture array node")
+		}
 	}
 	encoder, err := opcua.NewEncoder(c.limits)
 	if err != nil {
@@ -284,6 +284,8 @@ func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session
 		NodesToRead: []opcua.ReadValueID{
 			{NodeID: intNode, AttributeID: opcua.AttributeValue},
 			{NodeID: stringNode, AttributeID: opcua.AttributeValue},
+			{NodeID: matrixNode, AttributeID: opcua.AttributeValue},
+			{NodeID: offsetNode, AttributeID: opcua.AttributeValue},
 		},
 	})
 	body, err := encoder.Bytes()
@@ -301,19 +303,18 @@ func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session
 	if err != nil || header.ServiceResult != opcua.StatusGood {
 		return fmt.Errorf("array Read did not return a successful response header")
 	}
-	if length, isNull, err := decoder.ReadArrayLength(1); err != nil || isNull || length != 2 {
+	if length, isNull, err := decoder.ReadArrayLength(1); err != nil || isNull || length != 4 {
 		return fmt.Errorf("array Read returned the wrong result count")
 	}
 
 	// The server's generic Variant decoder skips received array elements.
 	// Read them here so the probe checks the actual UA wire values and order.
-	if err := readFixtureArrayHeader(decoder, opcua.BuiltInInt32, 3); err != nil {
+	vector, err := readFixtureArraySample(decoder)
+	if err != nil {
 		return err
 	}
-	for _, expected := range []int32{2, -7, 31} {
-		if value, err := decoder.ReadInt32(); err != nil || value != expected {
-			return fmt.Errorf("UA Int32 array changed an ordered element")
-		}
+	if !vector.matches(fixtureArraySample{elements: []int32{2, -7, 31}}) {
+		return fmt.Errorf("UA Int32 array changed the element order or rank")
 	}
 	if err := readFixtureArrayHeader(decoder, opcua.BuiltInString, 2); err != nil {
 		return err
@@ -322,6 +323,20 @@ func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session
 		if value, isNull, err := decoder.ReadString(); err != nil || isNull || value != expected {
 			return fmt.Errorf("UA String array changed an ordered element")
 		}
+	}
+	matrix, err := readFixtureArraySample(decoder)
+	if err != nil {
+		return err
+	}
+	if !matrix.matches(fixtureArraySample{dimensions: []int32{2, 3}, elements: fixtureMatrixElements}) {
+		return fmt.Errorf("UA matrix Read changed the dimensions or element order")
+	}
+	offset, err := readFixtureArraySample(decoder)
+	if err != nil {
+		return err
+	}
+	if !offset.matches(fixtureArraySample{status: opcua.StatusBadNotSupported}) {
+		return fmt.Errorf("UA Read did not refuse the matrix with nonzero lower bounds")
 	}
 	if length, _, err := decoder.ReadArrayLength(1); err != nil || length != 0 || decoder.Remaining() != 0 {
 		return fmt.Errorf("UA array Read carried unexpected trailing data")
@@ -332,6 +347,8 @@ func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session
 	}{
 		{intNode, opcua.NodeIDInt32},
 		{stringNode, opcua.NodeIDString},
+		{matrixNode, opcua.NodeIDInt32},
+		{offsetNode, opcua.NodeIDInt32},
 	} {
 		status, value, err := c.readAttributeValue(token, session, fixture.node, opcua.AttributeValueRank, 57)
 		if err != nil {
@@ -366,8 +383,17 @@ func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session
 		if status != opcua.StatusBadTypeMismatch {
 			return fmt.Errorf("UA scalar Write to an array returned %s, want Bad_TypeMismatch", status.Hex())
 		}
+		status, err = c.writeVariant(token, session, matrixNode, opcua.Variant{
+			Type: opcua.BuiltInInt32, IsArray: true, Value: fixtureMatrixElements, ArrayDimensions: []int32{2, 3},
+		})
+		if err != nil {
+			return err
+		}
+		if status != opcua.StatusBadTypeMismatch {
+			return fmt.Errorf("UA matrix Write returned %s, want Bad_TypeMismatch", status.Hex())
+		}
 	}
-	fmt.Printf("OPCUA_REAL_DA_ARRAY_PASS variants=2 elements=ordered nodeMetadata=true arrayWriteRefused=%t valuesLogged=false\n", writeEnabled)
+	fmt.Printf("OPCUA_REAL_DA_ARRAY_PASS items=4 multidimensional=true nonzeroLowerBoundsRefused=true nodeMetadata=true arrayWriteRefused=%t valuesLogged=false\n", writeEnabled)
 	return nil
 }
 

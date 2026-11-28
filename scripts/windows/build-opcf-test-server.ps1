@@ -93,8 +93,6 @@ if ($null -ne $forbiddenBuildFeatures) {
     throw 'the pinned direct CMake build path contains an unexpected download or execution feature'
 }
 
-Invoke-DefenderGate -Path $source
-
 if (Test-Path -LiteralPath $build) {
     throw "build directory must not already exist: $build"
 }
@@ -104,18 +102,27 @@ if (Test-Path -LiteralPath $stage) {
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
 $generatorPlatform = if ($Platform -eq 'x86') { 'Win32' } else { 'x64' }
-Invoke-CheckedNative -FilePath 'cmake' -ArgumentList @(
-    '-S', $source,
-    '-B', $build,
-    '-A', $generatorPlatform,
-    '-DOPC_BUILD_TESTS=ON',
-    '-DOPC_ENABLE_SPECTRE=OFF'
-)
-Invoke-CheckedNative -FilePath 'cmake' -ArgumentList @(
-    '--build', $build,
-    '--config', 'Release',
-    '--target', 'opccomn_ps', 'opcproxy', 'opcsec_ps', 'OpcTestServer'
-)
+$arrayPatch = Join-Path $PSScriptRoot 'opcf-validation-arrays.patch'
+# Apply the test item changes to the pinned checkout during the build.
+Invoke-CheckedNative -FilePath 'git' -ArgumentList @('-C', $source, 'apply', '--unidiff-zero', $arrayPatch)
+try {
+    Invoke-DefenderGate -Path $source
+    Invoke-CheckedNative -FilePath 'cmake' -ArgumentList @(
+        '-S', $source,
+        '-B', $build,
+        '-A', $generatorPlatform,
+        '-DOPC_BUILD_TESTS=ON',
+        '-DOPC_ENABLE_SPECTRE=OFF'
+    )
+    Invoke-CheckedNative -FilePath 'cmake' -ArgumentList @(
+        '--build', $build,
+        '--config', 'Release',
+        '--target', 'opccomn_ps', 'opcproxy', 'opcsec_ps', 'OpcTestServer'
+    )
+}
+finally {
+    Invoke-CheckedNative -FilePath 'git' -ArgumentList @('-C', $source, 'apply', '--unidiff-zero', '--reverse', $arrayPatch)
+}
 
 $serverName = "OpcTestServer_$Platform.exe"
 $requiredFiles = @(
@@ -173,6 +180,18 @@ $arrayFixture = @'
             <Element>배열</Element>
             <Element>fixture</Element>
           </Value>
+          <Property PropertyID="6" xsi:type="xsd:float">100</Property>
+        </Item>
+      </BrowseElement>
+      <BrowseElement ElementName="Matrix">
+        <Item>
+          <Value xsi:type="ArrayOfInt"><Element>0</Element></Value>
+          <Property PropertyID="6" xsi:type="xsd:float">100</Property>
+        </Item>
+      </BrowseElement>
+      <BrowseElement ElementName="OffsetMatrix">
+        <Item>
+          <Value xsi:type="ArrayOfInt"><Element>0</Element></Value>
           <Property PropertyID="6" xsi:type="xsd:float">100</Property>
         </Item>
       </BrowseElement>

@@ -209,15 +209,21 @@ func validateScenario(ctx context.Context, client opcdav1.OPCDAAccessClient, exp
 }
 
 func validateFixtureArrays(ctx context.Context, client opcdav1.OPCDAAccessClient, writeEnabled bool) error {
-	for _, fixture := range []struct {
-		itemID   string
-		element  opcda.DAVarType
-		original []*opcdav1.DAScalarValue
-		changed  []*opcdav1.DAScalarValue
+	fixtures := []struct {
+		itemID     string
+		element    opcda.DAVarType
+		dimensions []*opcdav1.DADimension
+		original   []*opcdav1.DAScalarValue
+		changed    []*opcdav1.DAScalarValue
 	}{
-		{"ValidationArrays/Int32", opcda.VTI4, fixtureI4s(2, -7, 31), fixtureI4s(-31, 7, 2)},
-		{"ValidationArrays/String", opcda.VTBSTR, fixtureStrings("배열", "fixture"), fixtureStrings("", "변경")},
-	} {
+		{"ValidationArrays/Int32", opcda.VTI4, []*opcdav1.DADimension{{Length: 3}}, fixtureI4s(2, -7, 31), fixtureI4s(-31, 7, 2)},
+		{"ValidationArrays/String", opcda.VTBSTR, []*opcdav1.DADimension{{Length: 2}}, fixtureStrings("배열", "fixture"), fixtureStrings("", "변경")},
+		{"ValidationArrays/Matrix", opcda.VTI4, []*opcdav1.DADimension{{Length: 2}, {Length: 3}},
+			fixtureI4s(0, 1, 2, 10, 11, 12), fixtureI4s(30, 31, 32, 40, 41, 42)},
+		{"ValidationArrays/OffsetMatrix", opcda.VTI4, []*opcdav1.DADimension{{LowerBound: 1, Length: 2}, {LowerBound: -2, Length: 3}},
+			fixtureI4s(0, 1, 2, 10, 11, 12), fixtureI4s(30, 31, 32, 40, 41, 42)},
+	}
+	for _, fixture := range fixtures {
 		read := func(expected []*opcdav1.DAScalarValue) (*opcdav1.DAReadResult, error) {
 			response, err := client.Read(ctx, &opcdav1.DAReadRequest{Items: []*opcdav1.DAReadItem{{ItemId: fixture.itemID}}})
 			if err != nil {
@@ -230,9 +236,14 @@ func validateFixtureArrays(ctx context.Context, client opcdav1.OPCDAAccessClient
 			wantType := uint32(fixture.element | opcda.VTArray)
 			array := item.ArrayValue
 			if item.DataType.GetRaw() != wantType || item.CanonicalDataType.GetRaw() != wantType || item.Value != nil ||
-				array == nil || array.ElementDataType.GetRaw() != uint32(fixture.element) || len(array.Dimensions) != 1 ||
-				array.Dimensions[0].LowerBound != 0 || int(array.Dimensions[0].Length) != len(expected) || len(array.Elements) != len(expected) {
-				return nil, fmt.Errorf("array Read did not preserve the VARTYPE, shape or lower bound")
+				array == nil || array.ElementDataType.GetRaw() != uint32(fixture.element) ||
+				len(array.Dimensions) != len(fixture.dimensions) || len(array.Elements) != len(expected) {
+				return nil, fmt.Errorf("array Read of %s did not preserve the VARTYPE or rank", fixture.itemID)
+			}
+			for index, dimension := range fixture.dimensions {
+				if !proto.Equal(array.Dimensions[index], dimension) {
+					return nil, fmt.Errorf("array Read of %s changed a dimension length or lower bound", fixture.itemID)
+				}
 			}
 			for index, value := range expected {
 				if !proto.Equal(array.Elements[index], value) {
@@ -311,7 +322,7 @@ func validateFixtureArrays(ctx context.Context, client opcdav1.OPCDAAccessClient
 			return err
 		}
 	}
-	fmt.Printf("GRPC_REAL_DA_ARRAY_PASS variants=2 shape=true writeRoundTrip=%t changeNotifications=%t valuesLogged=false\n", writeEnabled, writeEnabled)
+	fmt.Printf("GRPC_REAL_DA_ARRAY_PASS items=%d multidimensional=true nonzeroLowerBounds=true writeRoundTrip=%t changeNotifications=%t valuesLogged=false\n", len(fixtures), writeEnabled, writeEnabled)
 	return nil
 }
 

@@ -1,0 +1,72 @@
+diff --git a/Source/Shared/SampleDevice/COpcDaDeviceItem.cpp b/Source/Shared/SampleDevice/COpcDaDeviceItem.cpp
+--- a/Source/Shared/SampleDevice/COpcDaDeviceItem.cpp
++++ b/Source/Shared/SampleDevice/COpcDaDeviceItem.cpp
+@@ -482,1 +482,7 @@
+-		if (!m_cValue.Get(cValue))
++		const VARIANT& array = m_cValidationArray.GetRef();
++		if (array.vt != VT_EMPTY)
++		{
++			const HRESULT result = VariantCopy(&cValue, &array);
++			if (FAILED(result)) return result;
++		}
++		else if (!m_cValue.Get(cValue))
+@@ -815,1 +821,10 @@
+-		m_cValue.Set(cValue);
++		VARIANT& array = m_cValidationArray.GetRef();
++		if (array.vt != VT_EMPTY)
++		{
++			const HRESULT result = VariantCopy(&array, &cValue);
++			if (FAILED(result)) return result;
++		}
++		else
++		{
++			m_cValue.Set(cValue);
++		}
+@@ -917,1 +932,2 @@
+-    m_cValue.Clear();
++    m_cValue.Clear();
++    m_cValidationArray.Clear();
+@@ -980,1 +996,31 @@
+-	m_vtDataType = OpcXml::GetVarType(m_cValue.eType);
++	m_vtDataType = OpcXml::GetVarType(m_cValue.eType);
++
++	// Seed these two fixture items directly in OLE Automation storage.
++	const bool matrix = m_cItemID == _T("ValidationArrays/Matrix");
++	const bool offset = m_cItemID == _T("ValidationArrays/OffsetMatrix");
++	if (matrix || offset)
++	{
++		const LONG rowBase = offset ? 1 : 0;
++		const LONG columnBase = offset ? -2 : 0;
++		SAFEARRAYBOUND bounds[2] = {{2, rowBase}, {3, columnBase}};
++		SAFEARRAY* data = SafeArrayCreate(VT_I4, 2, bounds);
++		if (data == NULL) return false;
++
++		for (LONG row = 0; row < 2; ++row)
++		{
++			for (LONG column = 0; column < 3; ++column)
++			{
++				LONG index[2] = {rowBase + row, columnBase + column};
++				LONG value = row * 10 + column;
++				if (FAILED(SafeArrayPutElement(data, index, &value)))
++				{
++					SafeArrayDestroy(data);
++					return false;
++				}
++			}
++		}
++
++		VARIANT& array = m_cValidationArray.GetRef();
++		array.vt = VT_ARRAY | VT_I4;
++		array.parray = data;
++	}
+diff --git a/Source/Shared/SampleDevice/COpcDaDeviceItem.h b/Source/Shared/SampleDevice/COpcDaDeviceItem.h
+--- a/Source/Shared/SampleDevice/COpcDaDeviceItem.h
++++ b/Source/Shared/SampleDevice/COpcDaDeviceItem.h
+@@ -39,1 +39,2 @@
+-#include "COpcDaTypeDictionary.h"
++#include "COpcDaTypeDictionary.h"
++#include "COpcVariant.h"
+@@ -282,1 +283,2 @@
+-	OpcXml::AnyType     m_cValue;        //2
++	OpcXml::AnyType     m_cValue;        //2
++    COpcVariant        m_cValidationArray;

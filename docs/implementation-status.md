@@ -61,6 +61,11 @@ and refreshes it when a later Read or notification reports a change.
 | SAFEARRAY notifications | gRPC and MCP carry changed and restored Int32 and BSTR arrays. OPC UA Publish carries changed and restored Int32 arrays. Both architectures passed | Zero-based one-dimensional fixture data. [Array results](validation/compatibility.md#recorded-result-safearray-round-trips) |
 | Windows unit and ABI tests | Both architectures, memory layouts, VARIANT/BSTR/SAFEARRAY handling | Unit coverage is not source interoperability |
 
+The Windows fixture stages two native two-dimensional `VT_I4` values. The
+array probes check shape and element order through all four frontends, with
+typed Write and restoration through HTTP, gRPC and MCP. The OPC UA probe
+expects a status-only `Bad_NotSupported` for nonzero lower bounds.
+
 [Compatibility evidence](validation/compatibility.md) records exact versions, commits,
 run links, resource deltas, and scenario limits. It remains the authority for
 executed compatibility claims.

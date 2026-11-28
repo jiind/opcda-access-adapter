@@ -109,9 +109,8 @@ var dataCallbackVTable = &iopcDataCallbackVTable{
 // safe for that. Two different guarantees provide it, and confusing them is how
 // a later change breaks one:
 //
-//   - Synchronised: this registry, the pending set behind its own mutex, and
-//     the rejected counter, which is atomic. These are written while the
-//     callback may be running.
+//   - Synchronised: this registry and its detachable target, the pending set
+//     behind its own mutex, and the atomic reference and rejection counts.
 //   - Published then immutable: the subscription's registrations map, group
 //     client handle, item count, BSTR bound and info. Every one is written
 //     before IConnectionPoint::Advise is called, which is the moment the server
@@ -121,36 +120,37 @@ var dataCallbackVTable = &iopcDataCallbackVTable{
 // Adding a write to anything in the second group — supporting items added to a
 // live subscription, say — makes it a concurrent map write against the callback
 // thread. Go reports that as a fatal error no recover can catch.
+type callbackRegistration struct {
+	target atomic.Pointer[daSubscription]
+	pinner runtime.Pinner
+}
+
 var (
-	callbackRegistryMu sync.Mutex
-	callbackRegistry   = make(map[uint64]*daSubscription)
-	nextCallbackID     atomic.Uint64
+	callbackRegistry sync.Map // uint64 to *callbackRegistration
+	nextCallbackID   atomic.Uint64
 )
 
-func registerCallback(subscription *daSubscription) uint64 {
-	id := nextCallbackID.Add(1)
-	callbackRegistryMu.Lock()
-	callbackRegistry[id] = subscription
-	callbackRegistryMu.Unlock()
-	return id
+func registerCallback(subscription *daSubscription) *dataCallbackObject {
+	object := &dataCallbackObject{vtable: dataCallbackVTable, refs: 1, id: nextCallbackID.Add(1)}
+	registration := new(callbackRegistration)
+	registration.pinner.Pin(object)
+	registration.pinner.Pin(dataCallbackVTable)
+	registration.target.Store(subscription)
+	callbackRegistry.Store(object.id, registration)
+	return object
 }
 
-func unregisterCallback(id uint64) {
-	callbackRegistryMu.Lock()
-	delete(callbackRegistry, id)
-	callbackRegistryMu.Unlock()
+func lookupCallback(id uint64) *daSubscription {
+	entry, ok := callbackRegistry.Load(id)
+	if !ok {
+		return nil
+	}
+	return entry.(*callbackRegistration).target.Load()
 }
 
-func lookupCallback(id uint64) (*daSubscription, bool) {
-	callbackRegistryMu.Lock()
-	defer callbackRegistryMu.Unlock()
-	subscription, ok := callbackRegistry[id]
-	return subscription, ok
-}
-
-// comPointer converts a COM-supplied address into a pointer. The address always
-// refers to apartment- or server-owned memory that the Go collector does not
-// manage, which is the case the unsafeptr diagnostic cannot distinguish.
+// comPointer converts an address passed through the COM ABI into a pointer.
+// The caller guarantees that the referenced COM memory or pinned Go object
+// remains live for the duration of its use.
 func comPointer(address uintptr) unsafe.Pointer {
 	return *(*unsafe.Pointer)(unsafe.Pointer(&address))
 }
@@ -193,14 +193,25 @@ func dataCallbackRelease(this uintptr) uintptr {
 	if object == nil {
 		return 0
 	}
-	// The adapter owns the allocation and frees it during subscription
-	// teardown, so reaching zero never frees memory the server may still touch.
+	return uintptr(releaseCallback(object))
+}
+
+func releaseCallback(object *dataCallbackObject) int32 {
 	remaining := atomic.AddInt32(&object.refs, -1)
 	if remaining < 0 {
 		atomic.StoreInt32(&object.refs, 0)
 		return 0
 	}
-	return uintptr(remaining)
+	if remaining == 0 {
+		// The server may release its last reference after Unadvise, even on
+		// another thread. Only the Go pin is released here. The DA thread
+		// has ownership of the group's COM interfaces and cleanup calls.
+		if entry, ok := callbackRegistry.LoadAndDelete(object.id); ok {
+			entry.(*callbackRegistration).pinner.Unpin()
+		}
+		runtime.KeepAlive(object)
+	}
+	return remaining
 }
 
 // The asynchronous IO completions are part of IOPCDataCallback but belong to
@@ -256,8 +267,8 @@ func dataCallbackOnDataChange(
 	if object == nil {
 		return ePointer
 	}
-	subscription, ok := lookupCallback(object.id)
-	if !ok {
+	subscription := lookupCallback(object.id)
+	if subscription == nil {
 		return sOK
 	}
 	if groupHandle != uintptr(subscription.groupClientHandle) {
@@ -351,10 +362,7 @@ type daSubscription struct {
 	cookie            uint32
 	advised           bool
 
-	callback   *dataCallbackObject
-	callbackID uint64
-	pinner     runtime.Pinner
-	pinned     bool
+	callback *dataCallbackObject
 
 	registrations    map[uint32]itemRegistration
 	itemCount        int
@@ -666,12 +674,7 @@ func (session *daThreadSession) createSubscription(id SubscriptionID, request Su
 		ActiveItemCount:      activeItems,
 	}
 
-	subscription.callback = &dataCallbackObject{vtable: dataCallbackVTable, refs: 1}
-	subscription.pinner.Pin(subscription.callback)
-	subscription.pinner.Pin(dataCallbackVTable)
-	subscription.pinned = true
-	subscription.callbackID = registerCallback(subscription)
-	subscription.callback.id = subscription.callbackID
+	subscription.callback = registerCallback(subscription)
 
 	point, cookie, err := adviseDataCallback(itemMgt, subscription.callback)
 	if err != nil {
@@ -688,6 +691,15 @@ func (session *daThreadSession) createSubscription(id SubscriptionID, request Su
 // and never delivers the pending set, which belongs to a connection generation
 // that is ending.
 func (subscription *daSubscription) releaseCOM(server *iopcServer) {
+	callback := subscription.callback
+	if callback != nil {
+		// Our reference is still live, so the registration cannot disappear.
+		// Retain the pin for any delayed Release without retaining the DA group
+		// or letting a late callback reach its subscription.
+		if entry, ok := callbackRegistry.Load(callback.id); ok {
+			entry.(*callbackRegistration).target.Store(nil)
+		}
+	}
 	if subscription.advised {
 		_ = unadviseDataCallback(subscription.connectionPoint, subscription.cookie)
 		subscription.advised = false
@@ -705,22 +717,15 @@ func (subscription *daSubscription) releaseCOM(server *iopcServer) {
 		subscription.hasServerGroup = false
 		subscription.serverGroupHandle = 0
 	}
-	if subscription.callbackID != 0 {
-		unregisterCallback(subscription.callbackID)
-		subscription.callbackID = 0
-	}
-	// Unpinning is safe only once the server can no longer reach the object.
-	// A server that leaked a reference keeps the allocation pinned instead of
-	// risking a use-after-free; the leak is bounded by MaxSubscriptions.
-	if subscription.pinned && subscription.callback != nil && atomic.LoadInt32(&subscription.callback.refs) <= 1 {
-		subscription.pinner.Unpin()
-		subscription.pinned = false
+	if callback != nil {
+		subscription.callback = nil
+		releaseCallback(callback)
 	}
 }
 
 func (subscription *daSubscription) teardown(server *iopcServer, err error) {
-	subscription.releaseCOM(server)
 	if subscription.pending != nil {
 		subscription.pending.invalidate(err)
 	}
+	subscription.releaseCOM(server)
 }

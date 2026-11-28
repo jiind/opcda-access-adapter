@@ -93,6 +93,14 @@ Treat the HRESULT as evidence, not as a complete diagnosis. Correlate the
 same time window with Windows System/Application logs and vendor logs without
 copying process values into an issue.
 
+For Graybox Gray Simulator `1.7.9.701`, the recorded HTTP service opened its
+listener under LocalService but `CoCreateInstance(IOPCServer)` returned
+`0x80070005`. Inspect the System log for DistributedCOM event `10016` matching
+the source CLSID/AppID and the service identity. The inspected Graybox AppID
+had no application-specific `LaunchPermission`, `AccessPermission`, or
+`RunAs` override. Use the verified foreground mode under the permitted account
+while investigating a vendor-supported LocalService deployment.
+
 Microsoft's DCOM hardening for CVE-2021-26414 has been permanently enabled
 since March 2023. Do not attempt to disable it. Events 10036, 10037, and 10038
 are relevant when diagnosing remote requests with inadequate authentication;

@@ -162,7 +162,7 @@ func newDataChangeFixture(t *testing.T) *dataChangeFixture {
 		},
 		pending: newPendingUpdates(2),
 	}
-	subscription.callback = &dataCallbackObject{vtable: dataCallbackVTable, refs: 1}
+	subscription.callback = registerCallback(subscription)
 
 	fixture := &dataChangeFixture{
 		subscription: subscription,
@@ -177,7 +177,6 @@ func newDataChangeFixture(t *testing.T) *dataChangeFixture {
 	fixture.variants[1].VT = uint16(VTI4)
 	binary.LittleEndian.PutUint32(fixture.variants[1].Data[:], 7)
 
-	fixture.pinner.Pin(subscription.callback)
 	fixture.pinner.Pin(&fixture.handles[0])
 	fixture.pinner.Pin(&fixture.variants[0])
 	fixture.pinner.Pin(&fixture.qualities[0])
@@ -185,10 +184,8 @@ func newDataChangeFixture(t *testing.T) *dataChangeFixture {
 	fixture.pinner.Pin(&fixture.errors[0])
 	fixture.this = uintptr(unsafe.Pointer(subscription.callback))
 
-	subscription.callbackID = registerCallback(subscription)
-	subscription.callback.id = subscription.callbackID
 	t.Cleanup(func() {
-		unregisterCallback(subscription.callbackID)
+		subscription.releaseCOM(nil)
 		fixture.pinner.Unpin()
 	})
 	return fixture
@@ -291,16 +288,8 @@ func TestOnDataChangeIgnoresForeignGroupAndUnknownHandles(t *testing.T) {
 	}
 }
 
-func TestOnDataChangeToleratesUnknownCallbackAndNullArrays(t *testing.T) {
+func TestOnDataChangeToleratesNullArrays(t *testing.T) {
 	fixture := newDataChangeFixture(t)
-	// An OnDataChange delivered after teardown must not panic or crash.
-	unregisterCallback(fixture.subscription.callbackID)
-	if result := fixture.call(t, 2, 2); result != sOK {
-		t.Fatalf("OnDataChange after unregister = 0x%X, want S_OK", result)
-	}
-	fixture.subscription.callbackID = registerCallback(fixture.subscription)
-	fixture.subscription.callback.id = fixture.subscription.callbackID
-
 	result := dataCallbackOnDataChange(fixture.this, 0, 2, 0, 0, 1, 0, 0, 0, 0, 0)
 	if result != ePointer {
 		t.Fatalf("OnDataChange with null arrays = 0x%X, want E_POINTER", result)
@@ -312,6 +301,7 @@ func TestOnDataChangeToleratesUnknownCallbackAndNullArrays(t *testing.T) {
 
 func TestSubscriptionInvalidationDropsPendingValues(t *testing.T) {
 	fixture := newDataChangeFixture(t)
+	callbackID := fixture.subscription.callback.id
 	if result := fixture.call(t, 2, 2); result != sOK {
 		t.Fatalf("OnDataChange = 0x%X, want S_OK", result)
 	}
@@ -329,7 +319,44 @@ func TestSubscriptionInvalidationDropsPendingValues(t *testing.T) {
 	if fixture.subscription.Err() != cause {
 		t.Fatalf("Err = %v, want the invalidation cause", fixture.subscription.Err())
 	}
-	if _, found := lookupCallback(fixture.subscription.callbackID); found {
-		t.Fatal("teardown left the callback registered")
+	if _, found := callbackRegistry.Load(callbackID); found {
+		t.Fatal("teardown retained a callback without remaining references")
+	}
+}
+
+func TestSubscriptionTeardownWaitsForLateCallbackRelease(t *testing.T) {
+	fixture := newDataChangeFixture(t)
+	callbackID := fixture.subscription.callback.id
+	if refs := dataCallbackAddRef(fixture.this); refs != 2 {
+		t.Fatalf("server AddRef = %d, want 2", refs)
+	}
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			dataCallbackRelease(fixture.this)
+		}
+	})
+
+	fixture.subscription.teardown(nil, NewAdapterError(CodeSubscriptionInvalidated, "source disconnected"))
+	runtime.GC()
+	if _, found := callbackRegistry.Load(callbackID); !found {
+		t.Fatal("teardown discarded the pin owner before the server released its reference")
+	}
+	if lookupCallback(callbackID) != nil {
+		t.Fatal("a retired callback can still reach the DA subscription")
+	}
+	if result := fixture.call(t, 2, 2); result != sOK || len(fixture.subscription.Drain()) != 0 {
+		t.Fatalf("late OnDataChange returned 0x%X or delivered a value", result)
+	}
+
+	remaining := make(chan uintptr, 1)
+	go func() { remaining <- dataCallbackRelease(fixture.this) }()
+	refs := <-remaining
+	released = true
+	if refs != 0 {
+		t.Fatalf("final server Release = %d, want 0", refs)
+	}
+	if _, found := callbackRegistry.Load(callbackID); found {
+		t.Fatal("final Release did not reclaim the pin owner")
 	}
 }

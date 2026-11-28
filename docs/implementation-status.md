@@ -1,8 +1,9 @@
 # Implementation status
 
-The scoped implementation is complete, including HTTP, gRPC, OPC UA, and MCP.
-There is no public release yet. The release blocker is the unexecuted local
-Windows destructive review; broad vendor compatibility is also unproven.
+The scoped implementation includes HTTP, gRPC, OPC UA, and MCP. There is no
+public release yet. The local Windows destructive review remains open. The
+callback lifetime fix has passed Windows regression tests. Windows application
+control blocked the fixed adapter's Graybox rerun on the laptop.
 
 This page summarizes current coverage and release prerequisites.
 
@@ -34,7 +35,7 @@ the DA runtime's reconnect path.
 | Evidence | What it establishes | Limit |
 |---|---|---|
 | OPC Foundation DA 2.05a fixture, 386 and amd64 | Scoped COM operations, failures, reconnect, subscriptions, frontends, and soak | One source-built fixture |
-| Graybox Gray Simulator 1.7.9.701, one x86 installation | Manual DA core, HTTP, gRPC unary/streaming, and read-only UA observations | One operator-supplied copy; provenance and other versions unproven |
+| Graybox Gray Simulator 1.7.9.701, x86 | HTTP and gRPC operations and recovery, OPC UA Write and subscriptions, MCP tools, guided setup and Service lifecycle | The earlier rapid MCP crash still needs a Graybox rerun with the fix. HTTP LocalService activation received COM access denied. [Executed results](validation/compatibility.md#graybox-four-frontend-validation-on-2026-11-28) |
 | asyncua, open62541, OPC Foundation .NET | UA client behavior over a scripted DA source; all three gated in CI | No DA-side or conformance proof |
 | MCP stdio | Independent Python client against the real fixture on both architectures | Recorded scenarios, not every host or vendor |
 | Windows unit and ABI tests | Both architectures, memory layouts, VARIANT/BSTR/SAFEARRAY handling | Unit coverage is not source interoperability |

@@ -36,17 +36,16 @@ class Client:
         try:
             while True:
                 line = self.process.stdout.readline((4 << 20) + 2)
-                if not line:
-                    return
-                if len(line) > 4 << 20:
-                    self.messages.put(None, timeout=1)
+                if not line or len(line) > 4 << 20:
                     return
                 self.messages.put(json.loads(line), timeout=1)
         except (ValueError, queue.Full):
+            return
+        finally:
             try:
                 self.messages.put_nowait(None)
             except queue.Full:
-                return
+                pass
 
     def read_errors(self):
         """진단은 제한된 메모리에만 유지하며 테스트 실패에도 값은 출력하지 않는다."""
@@ -87,20 +86,24 @@ class Client:
     def close(self):
         """stdin EOF로 종료시키고 프로세스가 정상 종료했는지 검증한다."""
         # 1. MCP 호스트가 입력을 닫는 정상 종료 경로를 실행한다.
-        self.process.stdin.close()
+        try:
+            self.process.stdin.close()
+        except BrokenPipeError:
+            pass
         try:
             code = self.process.wait(timeout=15)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=5)
             raise AssertionError("MCP process did not exit on stdin EOF") from None
+        finally:
+            self.reader.join(timeout=2)
+            self.errors.join(timeout=2)
+            self.process.stdout.close()
+            self.process.stderr.close()
 
-        # 2. 로그로 값이 유출되지 않았는지 확인하고 파이프를 닫는다.
-        self.reader.join(timeout=2)
-        self.errors.join(timeout=2)
-        self.process.stdout.close()
-        self.process.stderr.close()
-        assert code == 0, "MCP process exited unsuccessfully"
+        # 2. 종료 코드와 값 비기록을 확인한다.
+        assert code == 0, f"MCP process exited with code {code}"
         assert b'"value":' not in self.stderr and b"value=" not in self.stderr, "process value found in stderr"
 
 
@@ -152,6 +155,13 @@ def scenario(executable, clsid, real_da, write_enabled):
             assert len(update["results"]) == 1 and update["results"][0]["ok"], "initial DA callback missing"
             client.tool("da_unsubscribe", {"subscriptionId": group["subscriptionId"]})
             assert client.tool("da_status", {})["runtime"]["subscriptionCount"] == 0, "DA group was not released"
+
+            # Exercise rapid teardown, including releases that arrive after Unadvise.
+            for _ in range(24):
+                group = client.tool("da_subscribe", {"items": [{"itemId": "Test/Int32"}], "requestedUpdateRateMs": 250})
+                assert group["activeItemCount"] == 1, "repeated DA group creation failed"
+                client.tool("da_unsubscribe", {"subscriptionId": group["subscriptionId"]})
+            assert client.tool("da_status", {})["runtime"]["subscriptionCount"] == 0, "rapid unsubscribe left a DA group active"
 
             # 3. 허용된 fixture에만 동일 값 Write를 한 번 실행한다.
             if write_enabled:

@@ -818,6 +818,118 @@ func TestDeleteSubscriptionAndMonitoredItems(t *testing.T) {
 	}
 }
 
+func TestDeleteMonitoredItemsLeavesAnUnchangedGroupAlone(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		item opcda.DAItemID
+	}{
+		{name: "another monitor for the same item", item: "Test/Int32"},
+		{name: "a monitor with read access denied", item: "Test/Closed"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			runtime := &subscribingRuntime{}
+			service, _ := testSubscriptionService(t, runtime)
+			id := createSubscription(t, service)
+			monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+			remove := monitorItem(t, service, id, ItemNodeID(scenario.item), 2)
+			active := runtime.latest()
+			requests, releases := len(runtime.subscribeRequests()), runtime.unsubscribeCount()
+			runtime.err = opcda.NewAdapterError(opcda.CodeSubscriptionLimit, "no spare DA group")
+
+			response, err := service.DeleteMonitoredItems(context.Background(), testSession, DeleteMonitoredItemsRequest{
+				Header:           RequestHeader{AdditionalHeader: NullExtensionObject()},
+				SubscriptionID:   id,
+				MonitoredItemIDs: []uint32{remove.MonitoredItemID},
+			}, channelEpoch)
+			if err != nil || len(response.Results) != 1 || response.Results[0] != StatusGood {
+				t.Errorf("removing a monitor without changing DA items returned %v, %v", response.Results, err)
+			}
+			if len(runtime.subscribeRequests()) != requests || runtime.unsubscribeCount() != releases {
+				t.Fatal("deletion requested a group change with the same DA items")
+			}
+			active.push(daNotification("Test/Int32", 4, QualityGood))
+			notifications := publishOnce(t, service, channelEpoch)
+			if len(notifications) != 1 || notifications[0].ClientHandle != 1 || notifications[0].Value.Value.Value != int32(4) {
+				t.Fatalf("only the remaining monitor should receive the data: %+v", notifications)
+			}
+		})
+	}
+}
+
+func TestDeleteMonitoredItemsKeepsLiveGroupWhenReplacementFails(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		err     error
+		results map[opcda.DAItemID]opcda.SubscriptionItemStatus
+		status  StatusCode
+	}{
+		{
+			name:   "DA request times out",
+			err:    opcda.NewAdapterError(opcda.CodeRuntimeDeadline, "source request timed out"),
+			status: StatusBadTimeout,
+		},
+		{
+			name: "candidate loses the remaining item",
+			results: map[opcda.DAItemID]opcda.SubscriptionItemStatus{
+				"Test/Float": {HRESULT: OPCEUnknownItemID, HRESULTPresent: true},
+			},
+			status: StatusBadOutOfService,
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			runtime := &subscribingRuntime{}
+			service, _ := testSubscriptionService(t, runtime)
+			id := createSubscriptionWithPublishLimit(t, service, 1)
+			removed := monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+			monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
+			active := runtime.latest()
+			active.push(daNotification("Test/Int32", 1, QualityGood), daNotification("Test/Float", 2, QualityGood))
+			if !publishResponseAt(t, service, channelEpoch).MoreNotifications {
+				t.Fatal("the second value was not held for the next response")
+			}
+			before := runtime.unsubscribeCount()
+			runtime.err, runtime.itemResults = scenario.err, scenario.results
+
+			request := DeleteMonitoredItemsRequest{
+				Header:           RequestHeader{AdditionalHeader: NullExtensionObject()},
+				SubscriptionID:   id,
+				MonitoredItemIDs: []uint32{removed.MonitoredItemID},
+			}
+			result, err := service.DeleteMonitoredItems(context.Background(), testSession, request, channelEpoch)
+			var serviceError *CodecError
+			if !errors.As(err, &serviceError) || serviceError.Status != scenario.status {
+				t.Errorf("DeleteMonitoredItems returned %+v, %v, want %s", result.Results, err, scenario.status.Hex())
+			}
+			if service.subscriptions[id].da != active {
+				t.Fatal("failed DA replacement lost the live group")
+			}
+			if scenario.results != nil {
+				if runtime.unsubscribeCount() != before+1 || runtime.unsubscribed[before] != runtime.latest().Info().ID {
+					t.Fatal("failed replacement did not release only the candidate")
+				}
+			} else if runtime.unsubscribeCount() != before {
+				t.Fatal("whole-call failure released a group")
+			}
+			notifications := publishOnce(t, service, channelEpoch)
+			if len(notifications) != 1 || notifications[0].ClientHandle != 2 || notifications[0].Value.Value.Value != int32(2) {
+				t.Fatalf("the pending value should survive the failed replacement: %+v", notifications)
+			}
+			now := channelEpoch.Add(time.Second)
+			active.push(daNotification("Test/Int32", 3, QualityGood))
+			notifications = publishOnce(t, service, now)
+			if len(notifications) != 1 || notifications[0].ClientHandle != 1 || notifications[0].Value.Value.Value != int32(3) {
+				t.Fatalf("the monitor should continue to publish after the failed deletion: %+v", notifications)
+			}
+
+			runtime.err, runtime.itemResults = nil, nil
+			result, err = service.DeleteMonitoredItems(context.Background(), testSession, request, now)
+			if err != nil || len(result.Results) != 1 || result.Results[0] != StatusGood {
+				t.Fatalf("retry returned %v, %v", result.Results, err)
+			}
+		})
+	}
+}
+
 // A DA subscribe failure leaves no monitored items behind and reports the
 // source's status.
 func TestMonitoredItemsReportADASubscribeFailure(t *testing.T) {

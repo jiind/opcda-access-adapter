@@ -431,6 +431,10 @@ matches nothing.
 
 ### Continuation points
 
+A positive client reference count below the configured limit caps the page.
+Zero and counts at or above that limit use the server setting. Both Windows
+builds compare the complete unsigned count.
+
 A continuation point is **consumed by use**: the client receives a new one if
 more remains, so a stale point cannot be replayed. Points expire if a client
 abandons a browse, and `BrowseNext` with `releaseContinuationPoints` returns

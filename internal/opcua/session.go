@@ -3,6 +3,7 @@ package opcua
 import (
 	"crypto/rand"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 )
@@ -459,15 +460,22 @@ func (limits SessionLimits) ValidateForConfiguration() error { return limits.val
 
 // reviseTimeout clamps the client's request. OPC 10000-4 Table 15 requires the
 // revised value to be greater than zero.
-func (limits SessionLimits) reviseTimeout(requested float64) float64 {
-	requestedDuration := time.Duration(requested) * time.Millisecond
-	if requested <= 0 || requestedDuration < limits.MinTimeout {
-		requestedDuration = limits.MinTimeout
+func (limits SessionLimits) reviseTimeout(requested float64) time.Duration {
+	return reviseDurationMilliseconds(requested, limits.MinTimeout, limits.MaxTimeout)
+}
+
+// reviseDurationMilliseconds compares in wire units before converting to a
+// duration. An in-range client request keeps whole-millisecond resolution.
+func reviseDurationMilliseconds(requested float64, minimum, maximum time.Duration) time.Duration {
+	wholeMilliseconds := math.Trunc(requested)
+	switch {
+	case math.IsNaN(wholeMilliseconds), wholeMilliseconds < float64(minimum)/float64(time.Millisecond):
+		return minimum
+	case wholeMilliseconds >= float64(maximum)/float64(time.Millisecond):
+		return maximum
+	default:
+		return time.Duration(wholeMilliseconds) * time.Millisecond
 	}
-	if requestedDuration > limits.MaxTimeout {
-		requestedDuration = limits.MaxTimeout
-	}
-	return float64(requestedDuration / time.Millisecond)
 }
 
 // Session is one client session.
@@ -500,7 +508,7 @@ type Session struct {
 	// a second one is.
 	security     SessionSecurity
 	Name         string
-	Timeout      float64
+	timeout      time.Duration
 	CreatedAt    time.Time
 	LastActivity time.Time
 	Activated    bool
@@ -526,7 +534,7 @@ func (s *Session) expired(now time.Time) bool {
 	if s.inFlight > 0 {
 		return false
 	}
-	deadline := s.LastActivity.Add(time.Duration(s.Timeout) * time.Millisecond)
+	deadline := s.LastActivity.Add(s.timeout)
 	return !now.Before(deadline)
 }
 
@@ -558,7 +566,7 @@ func (s *Session) snapshot() SessionInfo {
 		CreatedOnChannel:    s.CreatedOnChannel,
 		BoundChannel:        s.BoundChannel,
 		Name:                s.Name,
-		Timeout:             s.Timeout,
+		Timeout:             float64(s.timeout) / float64(time.Millisecond),
 		Activated:           s.Activated,
 	}
 }
@@ -694,7 +702,7 @@ func (r *SessionRegistry) Create(channelID uint32, security SessionSecurity, req
 		BoundChannel:        channelID,
 		security:            security,
 		Name:                request.SessionName,
-		Timeout:             r.limits.reviseTimeout(request.RequestedSessionTimeout),
+		timeout:             r.limits.reviseTimeout(request.RequestedSessionTimeout),
 		CreatedAt:           now,
 		LastActivity:        now,
 	}

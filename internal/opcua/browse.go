@@ -520,9 +520,8 @@ func (s *BrowseService) Browse(ctx context.Context, session string, request Brow
 	maximum := s.limits.MaxReferencesPerNode
 	// Table 34: zero means the client imposes no limit, so the server's own
 	// bound applies.
-	if request.RequestedMaxReferencesPerNode > 0 &&
-		int(request.RequestedMaxReferencesPerNode) < maximum {
-		maximum = int(request.RequestedMaxReferencesPerNode)
+	if requested := request.RequestedMaxReferencesPerNode; requested > 0 && uint64(requested) < uint64(maximum) {
+		maximum = int(requested)
 	}
 
 	results := make([]BrowseResult, 0, len(request.NodesToBrowse))

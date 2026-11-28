@@ -3,7 +3,6 @@ package opcua
 import (
 	"context"
 	"fmt"
-	"math"
 	"slices"
 	"sync"
 	"time"
@@ -820,17 +819,9 @@ func (limits SubscriptionLimits) ValidateForConfiguration() error { return limit
 // revisePublishingInterval clamps the request. Table 82: a zero or negative
 // request means the fastest supported interval.
 func (limits SubscriptionLimits) revisePublishingInterval(requested float64) float64 {
-	minimum := float64(limits.MinPublishingInterval / time.Millisecond)
-	maximum := float64(limits.MaxPublishingInterval / time.Millisecond)
-	switch {
-	case math.IsNaN(requested), requested < minimum:
-		return minimum
-	case requested > maximum:
-		return maximum
-	default:
-		// DA update rates use whole milliseconds.
-		return math.Trunc(requested)
-	}
+	interval := reviseDurationMilliseconds(requested, limits.MinPublishingInterval, limits.MaxPublishingInterval)
+	// DA update rates use whole milliseconds.
+	return float64(interval / time.Millisecond)
 }
 
 // reviseKeepAliveCount clamps the request. Table 82: a zero request means the

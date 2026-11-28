@@ -2,6 +2,7 @@ package opcua
 
 import (
 	"bytes"
+	"math"
 	"testing"
 	"time"
 )
@@ -232,29 +233,53 @@ func TestCreateSessionIssuesAnUnguessableToken(t *testing.T) {
 
 func TestSessionTimeoutIsRevisedAndGreaterThanZero(t *testing.T) {
 	limits := SessionLimits{MinTimeout: 10 * time.Second, MaxTimeout: time.Minute, MaxSessions: 8}
-	registry := newTestSessionRegistry(t, limits)
 	for _, testCase := range []struct {
 		requested float64
-		want      float64
+		want      time.Duration
 	}{
-		{0, 10_000},
-		{-5, 10_000},
-		{1_000, 10_000},
-		{30_000, 30_000},
-		{3_600_000, 60_000},
+		{0, 10 * time.Second},
+		{-5, 10 * time.Second},
+		{1_000, 10 * time.Second},
+		{30_000, 30 * time.Second},
+		{30_000.75, 30 * time.Second},
+		{3_600_000, time.Minute},
+		{1e13, time.Minute},
+		{math.MaxFloat64, time.Minute},
+		{math.Inf(1), time.Minute},
+		{math.Inf(-1), 10 * time.Second},
+		{math.NaN(), 10 * time.Second},
 	} {
-		request := testCreateSessionRequest()
-		request.RequestedSessionTimeout = testCase.requested
-		session, _, err := registry.Create(1, testSessionSecurity(), request, channelEpoch)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if session.Timeout != testCase.want {
-			t.Fatalf("requested %v revised to %v, want %v", testCase.requested, session.Timeout, testCase.want)
-		}
-		if session.Timeout <= 0 {
-			t.Fatal("the server provided a timeout that is not greater than zero")
-		}
+		registry := newTestSessionRegistry(t, limits)
+		verifySessionTimeout(t, registry, testCase.requested, testCase.want)
+	}
+}
+
+func TestSessionRevisesToAPositiveFractionalConfiguredTimeout(t *testing.T) {
+	const timeout = 500 * time.Microsecond
+	limits := SessionLimits{MinTimeout: timeout, MaxTimeout: time.Second, MaxSessions: 1}
+	verifySessionTimeout(t, newTestSessionRegistry(t, limits), 0, timeout)
+}
+
+func TestSessionRevisesToTheMaximumConfiguredDuration(t *testing.T) {
+	const timeout = time.Duration(math.MaxInt64)
+	limits := SessionLimits{MinTimeout: time.Millisecond, MaxTimeout: timeout, MaxSessions: 1}
+	verifySessionTimeout(t, newTestSessionRegistry(t, limits), math.MaxFloat64, timeout)
+}
+
+func verifySessionTimeout(t *testing.T, registry *SessionRegistry, requested float64, want time.Duration) {
+	t.Helper()
+	request := testCreateSessionRequest()
+	request.RequestedSessionTimeout = requested
+	session, _, err := registry.Create(1, testSessionSecurity(), request, channelEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantMilliseconds := float64(want) / float64(time.Millisecond); session.Timeout != wantMilliseconds {
+		t.Fatalf("requested %v revised to %v, want %v", requested, session.Timeout, wantMilliseconds)
+	}
+	expiry := channelEpoch.Add(want)
+	if registry.ExpireStale(expiry.Add(-time.Nanosecond)) != 0 || registry.ExpireStale(expiry) != 1 {
+		t.Fatalf("session did not expire at the revised timeout for request %v", requested)
 	}
 }
 

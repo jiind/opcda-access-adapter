@@ -106,6 +106,22 @@ one. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46
   MCP session, real SAFEARRAY behavior, other vendors, or every MCP host.
   Do not conflate it with the separate DA core and gRPC results.
 
+### MCP recovery within one stdio session
+
+PR #253 head `511953968656f7b22d1f59fa5d8e3dcb3a892838` passed on Windows
+Server 2025 with the pinned fixture on 386 and amd64. One Python MCP client
+kept its session open across a controlled fixture outage and recovery.
+
+- During the outage, device Read failed without a stale value. The old
+  subscription returned `SUBSCRIPTION_INVALIDATED` and Write returned
+  `RUNTIME_UNAVAILABLE`.
+- Reconnect advanced the generation and reconnect count. Device Read resumed,
+  the outage Write was absent, and the active group count remained zero.
+- An explicit resubscribe returned a new handle and a successful callback from
+  the new generation. The retired handle then returned `SUBSCRIPTION_NOT_FOUND`.
+  Explicit unsubscribe returned the group count to zero. The client also
+  verified normal adapter exit on stdin EOF. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46158978771)
+
 ## Recorded result: Graybox Gray Simulator
 
 - Executed: 2026-09-16 on one local Windows build 10.0.26200.9168 host.

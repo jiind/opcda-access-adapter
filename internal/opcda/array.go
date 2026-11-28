@@ -2,6 +2,7 @@ package opcda
 
 import (
 	"fmt"
+	"math"
 	"unicode/utf8"
 )
 
@@ -15,6 +16,22 @@ import (
 type DADimension struct {
 	LowerBound int32
 	Length     uint32
+}
+
+func (dimension DADimension) upperBound() int64 {
+	return int64(dimension.LowerBound) + int64(dimension.Length) - 1
+}
+
+// advanceArrayIndices steps to the next element in the published order.
+func advanceArrayIndices(indices []int32, dimensions []DADimension) {
+	for position := len(indices) - 1; position >= 0; position-- {
+		dimension := dimensions[position]
+		if int64(indices[position]) < dimension.upperBound() {
+			indices[position]++
+			return
+		}
+		indices[position] = dimension.LowerBound
+	}
 }
 
 // DAArray is a SAFEARRAY value with its shape beside it. design.md §20.4
@@ -100,6 +117,10 @@ func (array DAArray) MatchesItsShape() error {
 		if dimension.Length == 0 {
 			return NewAdapterError(CodeInvalidValue,
 				fmt.Sprintf("array dimension %d has no length", index))
+		}
+		if dimension.upperBound() > math.MaxInt32 {
+			return NewAdapterError(CodeInvalidValue,
+				fmt.Sprintf("array dimension %d exceeds the signed 32-bit index range", index))
 		}
 		described *= uint64(dimension.Length)
 		// Bailing the moment the product passes what is carried is also what

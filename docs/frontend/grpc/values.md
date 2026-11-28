@@ -57,7 +57,8 @@ its own.
 A Write supplies the same message, with `data_type` naming the array VARTYPE.
 `element_data_type` may be given and must then agree; leaving it out is not a
 disagreement. A message whose elements and dimensions do not describe each
-other is refused rather than reshaped.
+other is refused. The calculated upper bound of every dimension must fit in
+a signed 32-bit index.
 
 [ADR-0019](../../design/adr/0019-safearray-representation.md) records the shape
 requirements. The [executed fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips)

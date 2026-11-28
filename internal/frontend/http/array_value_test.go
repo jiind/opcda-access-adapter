@@ -232,6 +232,8 @@ func TestAWrittenArrayMustAgreeWithItself(t *testing.T) {
 			`{"dimensions":[{"lowerBound":0,"length":3}],"elements":[1,2]}`},
 		{"more elements than the shape describes",
 			`{"dimensions":[{"lowerBound":0,"length":1}],"elements":[1,2]}`},
+		{"dimension past the signed index limit",
+			`{"dimensions":[{"lowerBound":2147483647,"length":2}],"elements":[1,2]}`},
 		{"no dimensions at all", `{"dimensions":[],"elements":[1]}`},
 		{"an element of the wrong type", `{"dimensions":[{"lowerBound":0,"length":1}],"elements":["x"]}`},
 		{"an element type that disagrees with the declared one",

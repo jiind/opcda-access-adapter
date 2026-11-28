@@ -76,17 +76,6 @@ func decodeSafeArray(array uintptr, declared DAVarType, limits ArrayLimits) (DAA
 	return decoded, nil
 }
 
-// advanceArrayIndices steps to the next element in the published order.
-func advanceArrayIndices(indices []int32, dimensions []DADimension) {
-	for position := len(indices) - 1; position >= 0; position-- {
-		indices[position]++
-		if indices[position] <= dimensions[position].LowerBound+int32(dimensions[position].Length)-1 {
-			return
-		}
-		indices[position] = dimensions[position].LowerBound
-	}
-}
-
 func safeArrayDimensions(array uintptr, limits ArrayLimits) ([]DADimension, error) {
 	count, _, _ := procSafeArrayGetDim.Call(array)
 	if count == 0 {

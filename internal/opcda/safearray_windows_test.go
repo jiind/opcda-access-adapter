@@ -2,7 +2,10 @@
 
 package opcda
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // These cases run against the real oleaut32 SAFEARRAY implementation, which is
 // the point of them. ADR-0019 decision 2 refuses to assume a SAFEARRAY's
@@ -75,6 +78,12 @@ func TestASafeArrayKeepsItsShapeThroughWindows(t *testing.T) {
 				Dimensions:  []DADimension{{LowerBound: 1, Length: 2}, {LowerBound: 0, Length: 3}},
 				Elements:    []any{int16(1), int16(2), int16(3), int16(4), int16(5), int16(6)},
 			},
+		},
+		{
+			name: "two dimensions reaching the signed index limit",
+			array: int32Array([]DADimension{
+				{LowerBound: 7, Length: 2}, {LowerBound: math.MaxInt32 - 1, Length: 2},
+			}, 10, 11, 20, 21),
 		},
 		{
 			name: "strings",

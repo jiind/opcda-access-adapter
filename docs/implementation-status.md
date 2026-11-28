@@ -34,7 +34,8 @@ UTF-8 files with a byte-order mark are accepted.
 
 HTTP and MCP Write require JSON strings for `VT_BSTR` and explicit lower
 bounds for arrays. Array Write accepts the Read value object with a matching
-declared VARTYPE. A recognized connection loss during branch ID lookup enters
+declared VARTYPE. Array dimensions must fit signed 32-bit indices. A
+recognized connection loss during branch ID lookup enters
 the DA runtime's reconnect path.
 
 OPC UA nodes report the element `DataType` and array `ValueRank` once the

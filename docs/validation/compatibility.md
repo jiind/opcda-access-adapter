@@ -874,6 +874,17 @@ This result validates the scoped v0 path against this specific official test
 fixture only. Third-party/vendor servers and non-Good Quality observations
 remain untested; compatibility must not be inferred for them.
 
+PR #249 head `1074097957215191f9ada979b106d1bd78653552` passed guided
+Windows Service checks for HTTP, gRPC, and OPC UA on 386 and amd64. Each
+service used `LocalService`, automatic start, the selected fixture CLSID,
+and a single loopback listener. The OPC UA service activated a session,
+browsed and read from the local DA fixture, and returned `Bad_NotWritable`
+for a scalar Write while Write was disabled. Each service recorded listener
+startup and DA connection separately. Uninstall removed each service and
+its Event Log source. A separate unit test passed with temporary Event Log
+write failures and verified that successful records were written once.
+[Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46143341751)
+
 ## Real-DA validation procedure
 
 1. On the same Windows machine as an installed DA server, build the matching

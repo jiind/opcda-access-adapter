@@ -184,6 +184,11 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 		if err := c.validateFixtureArrays(token, session, items, writeEnabled); err != nil {
 			return err
 		}
+		if !writeEnabled {
+			if err := c.validateFixtureWriteDisabled(token, session, items); err != nil {
+				return err
+			}
+		}
 	}
 
 	if arrayWriterURL != "" {
@@ -208,6 +213,31 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 	fmt.Printf(
 		"OPCUA_REAL_DA_PASS endpoint=verified session=activated items=%d read=ok subscription=%t valuesLogged=false\n",
 		len(items), subscribed)
+	return nil
+}
+
+func (c *client) validateFixtureWriteDisabled(token opcua.ChannelSecurityToken, session opcua.NodeID, items []opcua.NodeID) error {
+	target, err := c.writableItem(token, session, items)
+	if err != nil {
+		return err
+	}
+	status, value, err := c.readAttributeValue(token, session, target, opcua.AttributeValue, 59)
+	if err != nil {
+		return err
+	}
+	if status != opcua.StatusGood || value.Type != opcua.BuiltInFloat || value.IsArray {
+		return fmt.Errorf("the fixture Write target did not return a usable scalar")
+	}
+	// Use the value just read so the fixture remains unchanged if Write is
+	// unexpectedly enabled.
+	status, err = c.writeVariant(token, session, target, value)
+	if err != nil {
+		return err
+	}
+	if status != opcua.StatusBadNotWritable {
+		return fmt.Errorf("disabled OPC UA Write returned %s, want Bad_NotWritable", status.Hex())
+	}
+	fmt.Println("OPCUA_REAL_DA_WRITE_DISABLED_PASS")
 	return nil
 }
 

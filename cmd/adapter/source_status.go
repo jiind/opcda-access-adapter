@@ -41,3 +41,23 @@ func (reporter *sourceStatusReporter) update(status opcda.RuntimeStatus) (slog.L
 	reporter.lastMessage = message
 	return level, message
 }
+
+// serviceStartupEvents holds the startup record and the latest DA connection
+// status until Windows accepts them. It carries no process values.
+type serviceStartupEvents struct {
+	listener    string
+	source      string
+	sourceLevel slog.Level
+}
+
+func (events *serviceStartupEvents) flush(write func(slog.Level, string) bool) {
+	if events.listener != "" {
+		if !write(slog.LevelInfo, events.listener) {
+			return
+		}
+		events.listener = ""
+	}
+	if events.source != "" && write(events.sourceLevel, events.source) {
+		events.source = ""
+	}
+}

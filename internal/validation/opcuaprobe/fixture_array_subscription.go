@@ -98,7 +98,7 @@ func (c *client) validateFixtureArraySubscription(ctx context.Context, token opc
 	if err != nil {
 		return err
 	}
-	subscription, err := c.createSubscription(token, session, 0)
+	subscription, err := c.createSubscription(token, session, 0, 0)
 	if err != nil {
 		return err
 	}

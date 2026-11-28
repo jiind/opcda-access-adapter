@@ -459,6 +459,13 @@ to one notification per Publish response, the initial delivery signaled
 `MoreNotifications`. Both monitors received the initial, changed, and
 restored values within that limit. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46157213655)
 
+PR #254 head `c50e733854e519890a1a0cc386c6e44c3fa0fc2e` passed on Windows
+Server 2025 with the same fixture on 386 and amd64. One OPC UA session held
+two subscriptions. The higher priority subscription sent its initial
+keep-alive. The lower priority subscription then received the initial DA
+value while the higher priority subscription was idle. The probe deleted both
+subscriptions. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46159859931)
+
 ### DA error code result
 
 PR #71 workflow run

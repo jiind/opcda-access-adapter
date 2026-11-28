@@ -1,6 +1,7 @@
 package opcda
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -23,6 +24,27 @@ func int32Array(dimensions []DADimension, elements ...int32) DAArray {
 		boxed[index] = element
 	}
 	return DAArray{ElementType: VTI4, Dimensions: dimensions, Elements: boxed}
+}
+
+func TestArrayDescriptionRejectsUpperBoundPastWin32Long(t *testing.T) {
+	valid := int32Array([]DADimension{{LowerBound: math.MaxInt32 - 1, Length: 2}}, 1, 2)
+	if err := valid.Validate(testArrayBounds()); err != nil {
+		t.Fatalf("an upper bound at the index limit was refused: %v", err)
+	}
+	invalid := int32Array([]DADimension{{LowerBound: math.MaxInt32, Length: 2}}, 1, 2)
+	assertArrayError(t, invalid.MatchesItsShape(), CodeInvalidValue)
+	assertArrayError(t, invalid.Validate(testArrayBounds()), CodeInvalidValue)
+}
+
+func TestArrayIndexCarryAtMaximumBound(t *testing.T) {
+	indices := []int32{7, math.MaxInt32}
+	dimensions := []DADimension{
+		{LowerBound: 7, Length: 2}, {LowerBound: math.MaxInt32 - 1, Length: 2},
+	}
+	advanceArrayIndices(indices, dimensions)
+	if indices[0] != 8 || indices[1] != math.MaxInt32-1 {
+		t.Fatalf("carried indices %v, want [8 %d]", indices, math.MaxInt32-1)
+	}
 }
 
 func TestAnArrayMustDescribeTheElementsItCarries(t *testing.T) {

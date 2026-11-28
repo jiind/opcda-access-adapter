@@ -72,8 +72,9 @@ no replacement timestamp is generated.
 64-bit integers use decimal strings. NaN and infinity use `float-special`.
 SAFEARRAY uses `array` with element type, per-dimension lower bounds/lengths,
 and elements. Write requires an explicit integer lower bound for each
-dimension and a JSON string for every `VT_BSTR`. It accepts array values from
-Read when the declared Write VARTYPE matches. Unsupported types fail explicitly.
+dimension, a calculated upper bound within the signed 32-bit index range, and
+a JSON string for every `VT_BSTR`. It accepts array values from Read when the
+declared Write VARTYPE matches. Unsupported types fail explicitly.
 
 ```json
 {

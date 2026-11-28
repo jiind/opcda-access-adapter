@@ -70,6 +70,14 @@ order. A separate loopback HTTP adapter wrote the changed array to the same
 fixture, restored its original value, and was stopped after the OPC UA probe
 deleted the subscription. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46140672437)
 
+PR #247 head `114b68f014b18b405991ddc0fb26a477b2af215f` verified the
+sample device's negative-bound behavior on 386 and amd64. HTTP Write sent
+an Int32 array with lower bound −2 and length 3. The source recreated a
+zero-based vector of length 1, and HTTP Read reported that shape and the
+retained element. The test then restored and read the original array. The
+sample device computes its vector length from the first upper bound plus
+one. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46142125456), [pinned sample implementation](https://github.com/OPCF-Members/OPC-Classic-CoreComponents/blob/efe0d1d1ea86a8a727bf26a501a261765e836766/Source/Shared/OpcUtilityClasses/COpcVariant.cpp)
+
 ## Recorded result: MCP stdio and OPC Foundation fixture
 
 - Executed on 2026-10-27 for PR #227 head

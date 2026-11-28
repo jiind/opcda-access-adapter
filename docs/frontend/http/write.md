@@ -83,10 +83,10 @@ to `"array"`. The optional `elementDataType` accepts the Read object's
 type must agree with `dataType`. A mismatch returns HTTP 400 `TYPE_MISMATCH`.
 
 Each dimension must specify its integer `lowerBound` (including zero) and
-positive `length`. A missing or null lower bound, a shape that disagrees with
-`elements`, or a null value or element declared as `VT_BSTR` returns HTTP 400
-`INVALID_VALUE` before the adapter calls the source.
+positive `length`. The calculated upper bound must fit in a signed 32-bit
+index. An invalid bound, a shape that disagrees with `elements`, or a null
+value or element declared as `VT_BSTR` returns HTTP 400 `INVALID_VALUE`
+before the adapter calls the source.
 
-[ADR-0019](../../design/adr/0019-safearray-representation.md) records why the shape is
-carried rather than flattened. Array support is **not validated against any
-real OPC DA source**; see [implementation status](../../implementation-status.md).
+See the [array shape design](../../design/adr/0019-safearray-representation.md)
+and [executed fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips).

@@ -85,9 +85,9 @@ through the encoder instead of through a cache. One dimension out of zero is
 enough to refuse the whole value, because publishing the others and silently
 re-basing that one is the same loss in a smaller place.
 
-How often real sources use non-zero lower bounds is not something this adapter
-can assert. Array support is **not validated against any real OPC DA source**;
-see [implementation status](../../implementation-status.md).
+The [executed fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips)
+covers zero-based one-dimensional `VT_I4` and `VT_BSTR` arrays. Unit tests
+cover the refusal of arrays with nonzero lower bounds.
 
 `VT_EMPTY` and `VT_NULL` have no row. The adapter maps them to a DataValue with
 no value; this is an adapter decision recorded in ADR-0016.

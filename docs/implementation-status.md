@@ -19,7 +19,7 @@ This page summarizes current coverage and release prerequisites.
 | MCP stdio | Nine DA tools, explicit selection, bounded stdio, group ownership, and EOF cleanup | [MCP API](frontend/mcp/README.md) |
 | Setup | Registration-only detection, explicit configuration, foreground execution, LocalService for network frontends | [Setup](operations/setup.md) |
 | Item properties | DA queries and UA Table A.1 mapping | [ADR-0018](design/adr/0018-da-item-properties.md) |
-| SAFEARRAY | Shape-preserving Read/Write and frontend encodings; no real-source validation | [ADR-0019](design/adr/0019-safearray-representation.md) |
+| SAFEARRAY | Shape-preserving Read/Write and frontend encodings, with fixture coverage for zero-based one-dimensional `VT_I4` and `VT_BSTR` on 386 and amd64 | [Fixture result](validation/compatibility.md#recorded-result-safearray-round-trips) |
 | Distribution tooling | Windows archives, checksums, version metadata, attestations; no published release | [Release procedure](operations/releasing.md) |
 
 HTTP remains the default. MCP is inactive until selected explicitly. Write is
@@ -60,9 +60,10 @@ executed compatibility claims.
 3. Record evidence for the revision proposed for release, then complete the
    [release checklist](operations/releasing.md#publishing).
 
-Further compatibility work includes real DA SAFEARRAY values, more authorized
-vendor installations, sources without optional DA interfaces, and vendor-specific
-disconnect HRESULTs. UA Expert remains untested. Signed/encrypted UA policies,
+Further compatibility work includes real SAFEARRAYs with multiple dimensions
+or nonzero lower bounds, more authorized vendor installations, sources without
+optional DA interfaces, and vendor-specific disconnect HRESULTs. UA Expert
+remains untested. Signed/encrypted UA policies,
 new source protocols, storage, and a plugin framework are outside the current
 scope, not unfinished implementation phases.
 

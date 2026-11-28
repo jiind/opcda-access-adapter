@@ -65,11 +65,11 @@ The specification maps `VT_DATE` to `Double`. The DA core currently refuses
 `VT_DATE` and `VT_DECIMAL` values rather than converting them.
 
 Outgoing array values carry their element type and dimensions. Array Writes
-are refused, and ordinary DA item nodes retain scalar `ValueRank` metadata. UA refuses a DA array with a
-nonzero lower bound as `Bad_NotSupported`, because a UA Variant cannot carry
-that bound. By-reference variants are unsupported. No real DA source has yet
-validated the array path. [Array details](data-access.md#arrays) describe
-the encoding and type checks.
+are refused, and ordinary DA item nodes retain scalar `ValueRank` metadata.
+UA refuses a DA array with a nonzero lower bound as `Bad_NotSupported`, because
+a UA Variant cannot carry that bound. By-reference variants are unsupported.
+See the [array encoding](data-access.md#arrays) and
+[executed fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips).
 
 ## Quality
 

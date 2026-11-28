@@ -43,6 +43,6 @@ substituted.
 
 `VT_CY`, `VT_DATE`, `VT_DECIMAL`, `VT_VARIANT`, byref values, invalid UTF-16
 BSTRs, and unknown types are explicit item-level errors. Arrays retain their
-element type, dimensions, and lower bounds; see the [array format](write.md#array-values).
-No real DA source has yet validated the array path. Returned VARIANTs are
-cleared even when their value type is unsupported.
+element type, dimensions, and lower bounds. Returned VARIANTs are cleared even
+when their value type is unsupported. See the [array format](write.md#array-values)
+and [executed fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips).

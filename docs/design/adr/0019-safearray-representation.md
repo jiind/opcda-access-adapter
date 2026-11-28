@@ -204,15 +204,14 @@ use a matching symbolic element type or omit that field when the Write item
 already names the array VARTYPE. Each dimension explicitly supplies its lower
 bound, including zero.
 
-### 9. The status is stated as unvalidated until a real source says otherwise
+### 9. Scope validation claims to the source and array shapes exercised
 
-Implementing this does not make it validated, and `design.md`'s non-goal is
-precisely the promise. Until a third-party vendor DA server has exercised it
-(ADR-0017, still `Proposed`), `docs/implementation-status.md` records array
-support as implemented and **not** validated against any real source, naming
-what that leaves open: element order and lower-bound reporting are exactly the
-properties a self-round-trip cannot check, because the adapter would be
-agreeing with itself.
+Real-source tests compare the reported shape and element order with
+independently specified source data. The
+[OPC Foundation fixture result](../../validation/compatibility.md#recorded-result-safearray-round-trips)
+covers two element types with zero-based one-dimensional arrays. Other array
+shapes and third-party vendor compatibility require their own evidence, with
+vendor testing covered by [ADR-0017](0017-third-party-vendor-da-fixture.md).
 
 ## Consequences
 

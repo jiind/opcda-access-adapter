@@ -1,9 +1,9 @@
 # Implementation status
 
 The scoped implementation includes HTTP, gRPC, OPC UA, and MCP. There is no
-public release yet. The local Windows destructive review remains open. The
-callback lifetime fix has passed Windows regression tests. Windows application
-control blocked the fixed adapter's Graybox rerun on the laptop.
+public release yet. The callback lifetime fix passed Windows regression tests
+and 200 rapid subscription cycles against Graybox. The local Windows
+destructive review remains open.
 
 This page summarizes current coverage and release prerequisites.
 
@@ -25,6 +25,10 @@ This page summarizes current coverage and release prerequisites.
 HTTP remains the default. MCP is inactive until selected explicitly. Write is
 disabled by default. Each process serves one local DA source through one frontend.
 
+Guided setup prints the selected service endpoint and the saved MCP launch
+settings. Foreground network runs and Windows services report listener startup
+and DA connection changes separately.
+
 HTTP and MCP Write require JSON strings for `VT_BSTR` and explicit lower
 bounds for arrays. Array Write accepts the Read value object with a matching
 declared VARTYPE. A recognized connection loss during branch ID lookup enters
@@ -35,7 +39,7 @@ the DA runtime's reconnect path.
 | Evidence | What it establishes | Limit |
 |---|---|---|
 | OPC Foundation DA 2.05a fixture, 386 and amd64 | Scoped COM operations, failures, reconnect, subscriptions, frontends, and soak | One source-built fixture |
-| Graybox Gray Simulator 1.7.9.701, x86 | HTTP and gRPC operations and recovery, OPC UA Write and subscriptions, MCP tools, guided setup and Service lifecycle | The earlier rapid MCP crash still needs a Graybox rerun with the fix. HTTP LocalService activation received COM access denied. [Executed results](validation/compatibility.md#graybox-four-frontend-validation-on-2026-11-28) |
+| Graybox Gray Simulator 1.7.9.701, x86 | HTTP and gRPC operations and recovery, OPC UA Write and subscriptions, MCP tools and repeated group cleanup, guided setup and Service lifecycle | HTTP LocalService activation received COM access denied. [Executed results](validation/compatibility.md#graybox-four-frontend-validation-on-2026-11-28) |
 | asyncua, open62541, OPC Foundation .NET | UA client behavior over a scripted DA source; all three gated in CI | No DA-side or conformance proof |
 | MCP stdio | Independent Python client against the real fixture on both architectures | Recorded scenarios, not every host or vendor |
 | Windows unit and ABI tests | Both architectures, memory layouts, VARIANT/BSTR/SAFEARRAY handling | Unit coverage is not source interoperability |

@@ -250,6 +250,11 @@ func (s *Service) Address() string {
 
 func (s *Service) Frontend() FrontendType { return s.config.Frontend }
 
+// RuntimeStatus returns a snapshot of the source connection without issuing DA work.
+func (s *Service) RuntimeStatus() opcda.RuntimeStatus {
+	return s.runtime.Status(context.Background())
+}
+
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.terminal = true

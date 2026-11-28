@@ -57,8 +57,8 @@ func oneServer() []opcda.DetectedLocalServer {
 // guided setup is where an operator decides to use it. The warning belongs to
 // the OPC UA branch alone: printing it for HTTP would be untrue, and leaving it
 // out of the UA review would be the thing the decision record rules out.
-func TestOnlyTheOPCUAReviewCarriesItsSecurityWarning(t *testing.T) {
-	opcuaArguments := []string{
+func opcuaSetupArguments() []string {
+	return []string{
 		"--config", "adapter.json",
 		"--opcua-endpoint-url", "opc.tcp://127.0.0.1:4840",
 		"--opcua-application-uri", "urn:example:adapter",
@@ -66,9 +66,11 @@ func TestOnlyTheOPCUAReviewCarriesItsSecurityWarning(t *testing.T) {
 		"--opcua-security-policy-uri", "http://opcfoundation.org/UA/SecurityPolicy#None",
 		"--opcua-transport-profile-uri", "http://opcfoundation.org/UA-Profile/Transport/uatcp-uasc-uabinary",
 	}
+}
 
+func TestOnlyTheOPCUAReviewCarriesItsSecurityWarning(t *testing.T) {
 	// Source 1, frontend 3 (OPC UA), execution 1 (foreground), confirm.
-	opcua := runSetupWith(t, oneServer(), "1\n3\n1\ny\n", opcuaArguments...)
+	opcua := runSetupWith(t, oneServer(), "1\n3\n1\ny\n", opcuaSetupArguments()...)
 	if opcua.exit != 0 {
 		t.Fatalf("the OPC UA setup failed: exit=%d %s", opcua.exit, opcua.stderr)
 	}
@@ -121,6 +123,18 @@ func TestTheAddressShownAfterInstallBelongsToTheChosenFrontend(t *testing.T) {
 	}
 	if !strings.Contains(grpcSetup.stdout, "127.0.0.1:19090") {
 		t.Errorf("the gRPC service does not name its own address:\n%s", grpcSetup.stdout)
+	}
+
+	ua := runSetupWith(t, oneServer(), "1\n3\n2\ny\n", opcuaSetupArguments()...)
+	if ua.exit != 0 {
+		t.Fatalf("the OPC UA setup failed: exit=%d %s", ua.exit, ua.stderr)
+	}
+	_, started, _ := strings.Cut(ua.stdout, "installed and started.\n")
+	if !strings.Contains(started, "OPC UA endpoint: opc.tcp://127.0.0.1:4840") || strings.Contains(started, "gRPC endpoint") {
+		t.Errorf("the OPC UA startup output gives the wrong endpoint:\n%s", started)
+	}
+	if !strings.Contains(started, "Windows Application Event Log") {
+		t.Errorf("the OPC UA startup output omits the source diagnostic location:\n%s", started)
 	}
 }
 

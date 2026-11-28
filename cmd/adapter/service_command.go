@@ -36,7 +36,7 @@ func runServiceCommand(arguments []string, output, errorOutput io.Writer, depend
 			fmt.Fprintf(errorOutput, "install and start Windows Service: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(output, "Windows Service %s installed and started.\n", options.Name)
+		writeServiceStarted(output, options.Name)
 		return 0
 	case "uninstall":
 		flags := flag.NewFlagSet("service uninstall", flag.ContinueOnError)
@@ -75,6 +75,11 @@ func runServiceCommand(arguments []string, output, errorOutput io.Writer, depend
 		writeServiceUsage(errorOutput)
 		return 2
 	}
+}
+
+func writeServiceStarted(output io.Writer, name string) {
+	fmt.Fprintf(output, "Windows Service %s installed and started.\n", name)
+	fmt.Fprintf(output, "Check the DA source connection in the Windows Application Event Log (source %s).\n", name)
 }
 
 func parseServiceOptions(command string, arguments []string, errorOutput io.Writer, requireConfig bool) (serviceInstallOptions, int) {

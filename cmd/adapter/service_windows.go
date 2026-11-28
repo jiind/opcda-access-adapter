@@ -49,7 +49,7 @@ func installAndStartWindowsService(options serviceInstallOptions) error {
 			ErrorControl:     mgr.ErrorNormal,
 			ServiceStartName: windowsServiceAccount,
 			DisplayName:      "OPC DA Access Adapter (" + resolved.Name + ")",
-			Description:      "DA-native HTTP access to one explicitly configured local OPC DA server",
+			Description:      "Access to one explicitly configured local OPC DA server",
 		},
 		"service", "run", "--name", resolved.Name, "--config", resolved.ConfigPath,
 	)
@@ -215,14 +215,30 @@ func (handler *adapterServiceHandler) Execute(_ []string, requests <-chan svc.Ch
 	}
 	current := svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	statuses <- current
-	slog.Info("adapter Windows Service started", "address", service.Address())
-	writeServiceEventInfo(log, "OPC DA Access Adapter started on "+service.Address())
+	slog.Info("adapter Windows Service listener started", "frontend", service.Frontend(), "address", service.Address())
+	writeServiceEventInfo(log, fmt.Sprintf("OPC DA Access Adapter %s listener started on %s", service.Frontend(), service.Address()))
 
+	ticker := time.NewTicker(sourceStatusInterval)
+	defer ticker.Stop()
+	var reporter sourceStatusReporter
 	exitCode := uint32(0)
 	running := true
 	for running {
+		if level, message := reporter.update(service.RuntimeStatus()); message != "" {
+			slog.Log(context.Background(), level, message)
+			if level == slog.LevelInfo {
+				writeServiceEventInfo(log, message)
+			} else if log != nil {
+				_ = log.Warning(3, message)
+			}
+		}
 		select {
-		case request := <-requests:
+		case <-ticker.C:
+		case request, ok := <-requests:
+			if !ok {
+				running = false
+				continue
+			}
 			switch request.Cmd {
 			case svc.Interrogate:
 				statuses <- current
@@ -230,8 +246,8 @@ func (handler *adapterServiceHandler) Execute(_ []string, requests <-chan svc.Ch
 				running = false
 			}
 		case err := <-service.Errors():
-			slog.Error("adapter HTTP listener failed", "error", err)
-			writeServiceEventError(log, "HTTP listener failed: "+err.Error())
+			slog.Error("adapter listener failed", "frontend", service.Frontend(), "error", err)
+			writeServiceEventError(log, fmt.Sprintf("%s listener failed: %v", service.Frontend(), err))
 			exitCode = 1
 			running = false
 		}

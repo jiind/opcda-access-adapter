@@ -101,10 +101,21 @@ func runForeground(config app.Config) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
+	ticker := time.NewTicker(sourceStatusInterval)
+	defer ticker.Stop()
+	var reporter sourceStatusReporter
 	var listenerErr error
-	select {
-	case <-signals:
-	case listenerErr = <-service.Errors():
+	for {
+		if level, message := reporter.update(service.RuntimeStatus()); message != "" {
+			slog.Log(context.Background(), level, message)
+		}
+		select {
+		case <-signals:
+		case listenerErr = <-service.Errors():
+		case <-ticker.C:
+			continue
+		}
+		break
 	}
 
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)

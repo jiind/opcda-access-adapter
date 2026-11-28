@@ -16,8 +16,8 @@ recorded in [ADR-0006](../design/adr/0006-real-da-validation-fixture.md).
   vendor server process activation;
 - guided explicit source/frontend/action selection, strict configuration
   output, LocalService SCM installation, service-mode connection and device
-  Read through HTTP and gRPC, automatic-start metadata, Stop/uninstall, and
-  Event Log cleanup;
+  Read through HTTP, gRPC, and OPC UA, automatic-start metadata, Stop/uninstall,
+  and Event Log cleanup;
 - connection, group creation, and capabilities;
 - root and nested stateful Browse with exact ItemIDs;
 - device Read VARTYPE, raw Quality, timestamp presence, access rights, and raw
@@ -174,8 +174,8 @@ complete semantic, failure/reconnect, load/backpressure, and 200-Read soak
 regression. See the compatibility matrix for the exact observations and the
 limits of this evidence.
 
-The guided HTTP and gRPC checks capture the latest Application Event Log record
-ID before service installation. They match the test service's provider and
+The guided HTTP, gRPC, and OPC UA checks capture the latest Application Event
+Log record ID before service installation. They match the test service's provider and
 require separate listener-started and DA-connected records after that ID.
 The check reports which record was visible if the timeout expires.
 

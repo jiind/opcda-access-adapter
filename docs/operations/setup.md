@@ -192,6 +192,8 @@ while the adapter is still connecting to the DA server. Check for the separate
 source connected or disconnected message. Repeated identical reconnect errors
 produce one warning until the state or error changes. The warning carries the
 operation and HRESULT when available. Process values are never logged.
+If Windows rejects an Event Log write, the running service retries the listener
+record and the latest connection state on its next status check.
 The same DA diagnostic remains available in HTTP `/v1/status` and gRPC
 `OPCDAAccess.Status`.
 

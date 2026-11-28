@@ -2,10 +2,40 @@ package main
 
 import (
 	"log/slog"
+	"slices"
 	"testing"
 
 	"github.com/jiind/opcda-access-adapter/internal/opcda"
 )
+
+func TestServiceStartupEventsRetryUntilWritten(t *testing.T) {
+	events := serviceStartupEvents{listener: "listener started", source: "source connected", sourceLevel: slog.LevelInfo}
+	var attempts []string
+	events.flush(func(_ slog.Level, message string) bool {
+		attempts = append(attempts, message)
+		return false
+	})
+	events.flush(func(_ slog.Level, message string) bool {
+		attempts = append(attempts, message)
+		return message == "listener started"
+	})
+	// A new source status supersedes an older status Windows has yet to accept.
+	events.source = "source disconnected"
+	events.sourceLevel = slog.LevelWarn
+	send := func(level slog.Level, message string) bool {
+		attempts = append(attempts, message)
+		if level != slog.LevelWarn {
+			t.Fatal("the pending source warning lost its severity")
+		}
+		return true
+	}
+	events.flush(send)
+	events.flush(send)
+	want := []string{"listener started", "listener started", "source connected", "source disconnected"}
+	if !slices.Equal(attempts, want) {
+		t.Fatalf("attempts = %q, want %q", attempts, want)
+	}
+}
 
 func TestSourceStatusReporterSeparatesFailuresAndRecovery(t *testing.T) {
 	var reporter sourceStatusReporter

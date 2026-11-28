@@ -191,32 +191,32 @@ type adapterServiceHandler struct {
 }
 
 func (handler *adapterServiceHandler) Execute(_ []string, requests <-chan svc.ChangeRequest, statuses chan<- svc.Status) (bool, uint32) {
-	log, logErr := eventlog.Open(handler.serviceName)
-	if logErr == nil {
-		defer log.Close()
-	}
+	events := windowsServiceEventLog{source: handler.serviceName}
+	defer events.close()
 	statuses <- svc.Status{State: svc.StartPending, WaitHint: 15000}
 	config, err := app.LoadConfigFile(handler.configPath)
 	if err != nil {
 		slog.Error("load service configuration", "error", err)
-		writeServiceEventError(log, "load service configuration: "+err.Error())
+		events.write(slog.LevelError, "load service configuration: "+err.Error())
 		return false, 1
 	}
 	service, err := app.New(withBuildInfo(config), nil)
 	if err != nil {
 		slog.Error("create adapter service", "error", err)
-		writeServiceEventError(log, "create adapter: "+err.Error())
+		events.write(slog.LevelError, "create adapter: "+err.Error())
 		return false, 1
 	}
 	if err := service.Start(); err != nil {
 		slog.Error("start adapter service", "error", err)
-		writeServiceEventError(log, "start adapter: "+err.Error())
+		events.write(slog.LevelError, "start adapter: "+err.Error())
 		return false, 1
 	}
 	current := svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	statuses <- current
 	slog.Info("adapter Windows Service listener started", "frontend", service.Frontend(), "address", service.Address())
-	writeServiceEventInfo(log, fmt.Sprintf("OPC DA Access Adapter %s listener started on %s", service.Frontend(), service.Address()))
+	pending := serviceStartupEvents{
+		listener: fmt.Sprintf("OPC DA Access Adapter %s listener started on %s", service.Frontend(), service.Address()),
+	}
 
 	ticker := time.NewTicker(sourceStatusInterval)
 	defer ticker.Stop()
@@ -226,12 +226,10 @@ func (handler *adapterServiceHandler) Execute(_ []string, requests <-chan svc.Ch
 	for running {
 		if level, message := reporter.update(service.RuntimeStatus()); message != "" {
 			slog.Log(context.Background(), level, message)
-			if level == slog.LevelInfo {
-				writeServiceEventInfo(log, message)
-			} else if log != nil {
-				_ = log.Warning(3, message)
-			}
+			pending.source = message
+			pending.sourceLevel = level
 		}
+		pending.flush(events.write)
 		select {
 		case <-ticker.C:
 		case request, ok := <-requests:
@@ -247,7 +245,7 @@ func (handler *adapterServiceHandler) Execute(_ []string, requests <-chan svc.Ch
 			}
 		case err := <-service.Errors():
 			slog.Error("adapter listener failed", "frontend", service.Frontend(), "error", err)
-			writeServiceEventError(log, fmt.Sprintf("%s listener failed: %v", service.Frontend(), err))
+			events.write(slog.LevelError, fmt.Sprintf("%s listener failed: %v", service.Frontend(), err))
 			exitCode = 1
 			running = false
 		}
@@ -258,24 +256,62 @@ func (handler *adapterServiceHandler) Execute(_ []string, requests <-chan svc.Ch
 	defer cancel()
 	if err := service.Shutdown(shutdownContext); err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("shutdown adapter Windows Service", "error", err)
-		writeServiceEventError(log, "adapter shutdown failed: "+err.Error())
+		events.write(slog.LevelError, "adapter shutdown failed: "+err.Error())
 		exitCode = 1
 	}
 	if exitCode == 0 {
-		writeServiceEventInfo(log, "OPC DA Access Adapter stopped")
+		events.write(slog.LevelInfo, "OPC DA Access Adapter stopped")
 	}
 	return false, exitCode
 }
 
-func writeServiceEventInfo(log *eventlog.Log, message string) {
-	if log != nil {
-		_ = log.Info(1, message)
+// windowsServiceEventLog reopens the classic event source if Windows returns
+// a write error. Installation and source registration can become visible at
+// different times, so the service retries pending startup records while running.
+type windowsServiceEventLog struct {
+	source    string
+	handle    *eventlog.Log
+	lastError string
+}
+
+func (log *windowsServiceEventLog) close() {
+	if log.handle != nil {
+		_ = log.handle.Close()
+		log.handle = nil
 	}
 }
 
-func writeServiceEventError(log *eventlog.Log, message string) {
-	if log != nil {
-		_ = log.Error(2, message)
+func (log *windowsServiceEventLog) write(level slog.Level, message string) bool {
+	if log.handle == nil {
+		handle, err := eventlog.Open(log.source)
+		if err != nil {
+			log.reportError(err)
+			return false
+		}
+		log.handle = handle
+	}
+	var err error
+	switch level {
+	case slog.LevelError:
+		err = log.handle.Error(2, message)
+	case slog.LevelWarn:
+		err = log.handle.Warning(3, message)
+	default:
+		err = log.handle.Info(1, message)
+	}
+	if err != nil {
+		log.close()
+		log.reportError(err)
+		return false
+	}
+	log.lastError = ""
+	return true
+}
+
+func (log *windowsServiceEventLog) reportError(err error) {
+	if message := err.Error(); message != log.lastError {
+		slog.Warn("could not write Windows Event Log", "error", err)
+		log.lastError = message
 	}
 }
 

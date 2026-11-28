@@ -664,7 +664,7 @@ function Wait-ServiceStartupEvents {
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
-    [Console]::WriteLine("SERVICE_STARTUP_EVENT_CHECK frontend=$Frontend listener=$listenerSeen sourceConnected=$sourceSeen")
+    [Console]::WriteLine("SERVICE_STARTUP_EVENT_CHECK frontend=$Frontend records=$($events.Count) listener=$listenerSeen sourceConnected=$sourceSeen")
     return $false
 }
 
@@ -805,8 +805,13 @@ function Test-GuidedSetupWindowsService {
     }
 }
 
-function Test-GuidedSetupGRPCWindowsService {
-    Assert-True ($null -ne $script:GRPCProbeExecutable) 'gRPC probe path is required for gRPC validation'
+function Test-GuidedSetupWindowsServiceForFrontend {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('grpc', 'opcua')]
+        [string]$Frontend
+    )
+
     $selectedIndex = -1
     for ($index = 0; $index -lt $script:DetectedRegistrations.servers.Count; $index++) {
         $candidate = $script:DetectedRegistrations.servers[$index]
@@ -815,56 +820,73 @@ function Test-GuidedSetupGRPCWindowsService {
             break
         }
     }
-    Assert-True ($selectedIndex -ge 0) 'gRPC guided setup fixture candidate index was not found'
+    Assert-True ($selectedIndex -ge 0) "$Frontend guided setup fixture candidate index was not found"
 
-    $serviceName = "OPCDAAccessAdapterGRPCFixture$AdapterArch"
-    $configDirectory = Join-Path $env:ProgramData "OPCDAAccessAdapterGRPCValidation-$AdapterArch-$PID"
-    New-Item -ItemType Directory -Path $configDirectory | Out-Null
+    $label = $Frontend.ToUpperInvariant()
+    $serviceName = "OPCDAAccessAdapter${label}Fixture$AdapterArch"
+    $configDirectory = Join-Path $env:ProgramData "OPCDAAccessAdapter${label}Validation-$AdapterArch-$PID"
     $configPath = Join-Path $configDirectory 'adapter.json'
-    $grpcPort = if ($AdapterArch -eq '386') { 18551 } else { 18552 }
-    $answers = "$($selectedIndex + 1)`r`n2`r`n2`r`ny`r`n"
+    $portOffset = if ($AdapterArch -eq '386') { 0 } else { 1 }
+    if ($Frontend -eq 'grpc') {
+        $choice = 2
+        $listenAddress = "127.0.0.1:$(18551 + $portOffset)"
+        $setupOptions = @('--grpc-listen', $listenAddress)
+        $probe = $script:GRPCProbeExecutable
+        $probeOptions = @('-address', $listenAddress, '-expected-clsid', $expectedCLSID)
+    }
+    else {
+        $choice = 3
+        $listenAddress = "127.0.0.1:$(18753 + $portOffset)"
+        $endpoint = "opc.tcp://$listenAddress"
+        $policy = 'http://opcfoundation.org/UA/SecurityPolicy#None'
+        $setupOptions = @(
+            '--opcua-listen', $listenAddress,
+            '--opcua-endpoint-url', $endpoint,
+            '--opcua-application-uri', 'urn:validation:opcua-service:application',
+            '--opcua-namespace-uri', 'urn:validation:opcua-service:source',
+            '--opcua-security-policy-uri', $policy,
+            '--opcua-transport-profile-uri', 'http://opcfoundation.org/UA-Profile/Transport/uatcp-uasc-uabinary'
+        )
+        $probe = $script:OPCUAProbeExecutable
+        $probeOptions = @('-address', $listenAddress, '-endpoint-url', $endpoint, '-security-policy-uri', $policy, '-array-fixture')
+    }
+    Assert-True ($null -ne $probe) "$Frontend probe path is required for service validation"
+    $answers = "$($selectedIndex + 1)`r`n$choice`r`n2`r`ny`r`n"
+    New-Item -ItemType Directory -Path $configDirectory | Out-Null
     try {
         $eventCheckpoint = Get-ApplicationLogRecordID
-        Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(
-            'setup',
-            '--config', $configPath,
-            '--grpc-listen', "127.0.0.1:$grpcPort",
-            '--service-name', $serviceName
-        ) -TimeoutSeconds 60 -StandardInputText $answers
+        $setupArguments = @('setup', '--config', $configPath, '--service-name', $serviceName) + $setupOptions
+        Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList $setupArguments -TimeoutSeconds 60 -StandardInputText $answers
 
         $guidedConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-        Assert-True ($guidedConfig.version -eq $script:ConfigFileVersion) `
-            "gRPC guided config version was not $($script:ConfigFileVersion)"
-        Assert-True (([Guid]$guidedConfig.source.clsid) -eq ([Guid]$expectedCLSID)) 'gRPC guided config changed the exact CLSID'
-        Assert-True ($guidedConfig.frontend.type -ceq 'grpc') 'gRPC guided config selected another frontend'
-        Assert-True ($guidedConfig.frontend.grpcListen -ceq "127.0.0.1:$grpcPort") 'gRPC guided config listener changed'
-        Assert-True ($null -eq $guidedConfig.frontend.PSObject.Properties['httpListen']) 'gRPC guided config retained an HTTP listener'
-        Assert-True (-not [bool]$guidedConfig.writeEnabled) 'gRPC guided setup enabled Write by default'
+        Assert-True ($guidedConfig.version -eq $script:ConfigFileVersion) "$Frontend guided config version was not $($script:ConfigFileVersion)"
+        Assert-True (([Guid]$guidedConfig.source.clsid) -eq ([Guid]$expectedCLSID)) "$Frontend guided config changed the exact CLSID"
+        Assert-True ($guidedConfig.frontend.type -ceq $Frontend) "$Frontend guided config selected another frontend"
+        $configuredListener = $guidedConfig.frontend.PSObject.Properties["${Frontend}Listen"].Value
+        Assert-True ($configuredListener -ceq $listenAddress) "$Frontend guided config listener changed"
+        Assert-True ($null -eq $guidedConfig.frontend.PSObject.Properties['httpListen']) "$Frontend guided config retained an HTTP listener"
+        Assert-True (-not [bool]$guidedConfig.writeEnabled) "$Frontend guided setup enabled Write by default"
 
         $installed = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
-        Assert-True ($null -ne $installed) 'gRPC guided setup did not install the Windows Service'
-        Assert-True ($installed.StartName -ceq 'NT AUTHORITY\LocalService') 'gRPC guided service did not use LocalService'
-        Assert-True ($installed.StartMode -ceq 'Auto') 'gRPC guided service did not use automatic startup'
-        Assert-True ($installed.PathName -match 'service run') 'gRPC guided service command did not use the SCM dispatcher'
+        Assert-True ($null -ne $installed) "$Frontend guided setup did not install the Windows Service"
+        Assert-True ($installed.StartName -ceq 'NT AUTHORITY\LocalService') "$Frontend guided service did not use LocalService"
+        Assert-True ($installed.StartMode -ceq 'Auto') "$Frontend guided service did not use automatic startup"
+        Assert-True ($installed.PathName -match 'service run') "$Frontend guided service command did not use the SCM dispatcher"
 
-        Invoke-NativeProcess -FilePath $script:GRPCProbeExecutable -ArgumentList @(
-            '-address', "127.0.0.1:$grpcPort",
-            '-expected-clsid', $expectedCLSID,
-            '-timeout', '60s'
-        ) -TimeoutSeconds 90
+        Invoke-NativeProcess -FilePath $probe -ArgumentList ($probeOptions + @('-timeout', '60s')) -TimeoutSeconds 90
+        $listeners = @(Get-NetTCPConnection -State Listen -OwningProcess $installed.ProcessId -ErrorAction SilentlyContinue)
+        Assert-True ($listeners.Count -eq 1 -and "$($listeners[0].LocalAddress):$($listeners[0].LocalPort)" -ceq $listenAddress) "$Frontend service did not expose exactly one configured loopback listener"
 
-        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $serviceName -AfterRecordID $eventCheckpoint -Frontend 'grpc'
-        Assert-True $serviceStarted 'gRPC guided service did not report listener startup and DA connection separately'
+        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $serviceName -AfterRecordID $eventCheckpoint -Frontend $Frontend
+        Assert-True $serviceStarted "$Frontend guided service did not report listener startup and DA connection separately"
 
         Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(
             'service', 'uninstall', '--name', $serviceName
         ) -TimeoutSeconds 60
-        Assert-True ($null -eq (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) `
-            'gRPC guided service still existed after uninstall'
-        Assert-True (-not (Test-Path -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$serviceName")) `
-            'gRPC guided service Event Log source remained after uninstall'
-        Stop-ServerProcesses
-        Write-Host "GUIDED_SETUP_GRPC_SERVICE_PASS arch=$AdapterArch account=LocalService configVersion=2 source=exact-clsid frontend=grpc writeEnabled=false"
+        Assert-True ($null -eq (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) "$Frontend guided service still existed after uninstall"
+        $eventSource = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\$serviceName"
+        Assert-True (-not (Test-Path -LiteralPath $eventSource)) "$Frontend guided service Event Log source remained after uninstall"
+        Write-Host "GUIDED_SETUP_${label}_SERVICE_PASS arch=$AdapterArch account=LocalService configVersion=$($script:ConfigFileVersion) source=exact-clsid frontend=$Frontend writeEnabled=false"
     }
     finally {
         if ($null -ne (Get-Service -Name $serviceName -ErrorAction SilentlyContinue)) {
@@ -874,7 +896,7 @@ function Test-GuidedSetupGRPCWindowsService {
                 ) -TimeoutSeconds 60
             }
             catch {
-                Write-Warning "gRPC guided service cleanup failed: $($_.Exception.Message)"
+                Write-Warning "$Frontend guided service cleanup failed: $($_.Exception.Message)"
             }
         }
         Stop-ServerProcesses
@@ -1216,13 +1238,14 @@ try {
     Write-Host "Registered source=$($script:ProgID) architecture=$serverPlatform using local COM"
     Test-LocalDetection
     Test-GuidedSetupWindowsService
-    Test-GuidedSetupGRPCWindowsService
+    Test-GuidedSetupWindowsServiceForFrontend -Frontend grpc
     Test-GRPCWriteEnabledForeground
     Test-MCPFrontend
     if ($null -ne $script:SubscribeProbeExecutable) {
         Test-SubscribeCore
     }
     if ($null -ne $script:OPCUAProbeExecutable) {
+        Test-GuidedSetupWindowsServiceForFrontend -Frontend opcua
         Test-OPCUAFrontend
     }
     if ($null -ne $script:LatencyProbeExecutable) {

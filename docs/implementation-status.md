@@ -27,7 +27,8 @@ disabled by default. Each process serves one local DA source through one fronten
 
 Guided setup prints the selected service endpoint and the saved MCP launch
 settings. Foreground network runs and Windows services report listener startup
-and DA connection changes separately.
+and DA connection changes separately. Windows services retry pending startup
+and connection records when the Event Log write fails.
 
 Configuration loading rejects duplicate field aliases and malformed Unicode.
 UTF-8 files with a byte-order mark are accepted.

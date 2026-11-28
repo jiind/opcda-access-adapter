@@ -23,7 +23,7 @@ evidence, not a claim that every later revision or vendor was tested.
 
 ## Current Windows execution record
 
-The 2026-11-29 KST run tested adapter revision
+The 2026-11-29 KST laptop runs tested adapter revision
 `42c602d5659c390bdea8779090f55e85ab50e4fd`. Go tests, vet, and cross-builds
 for Windows 386 and amd64 passed with Go 1.26.0. The CI rerun for that revision
 passed Windows tests and builds on both architectures, release package checks,
@@ -48,18 +48,55 @@ printed the expected revision with `--version`; the Graybox DA cases used 386.
 | HTTP | Browse returned 15 branches and 146 leaves. Device Read succeeded for 124 leaves and returned `UNSUPPORTED_VARTYPE` for 22 `VT_DATE` leaves. Ordered partial Read preserved `0xC0040007`. Default-disabled Write, type refusal, and a same-value `VT_BOOL` Write with readback passed. |
 | gRPC | Status, root and nested Browse, ordered partial Read, properties, default-disabled Write, type and source permission errors, and typed Write passed. Subscribe delivered both changes, the source value was restored, and 24 subscribe/cancel cycles ended with zero groups. |
 | OPC UA | Endpoint and session, Browse and BrowseNext release, property nodes, Read, Write restrictions, and typed change notifications passed. Republish returned the same sequence and acknowledgement removed it. Publishing disabled and resumed, the monitored item and subscription were deleted, the original value was restored, and the session and channel closed. |
-| MCP stdio | The targeted rerun passed all nine tools in both Write modes. Each mode completed 32 subscribe/unsubscribe cycles and clean EOF with zero TCP listeners. The enabled case verified latest-per-item delivery and restored its `VT_BSTR` value. |
+| MCP stdio | The corrected full run passed all nine tools in both Write modes. Each mode completed 32 subscribe/unsubscribe cycles, returned to zero groups, and exited cleanly on EOF with an owned group. The process opened zero TCP listeners. The enabled case verified latest-per-item delivery and restored its `VT_BSTR` value. |
 | Configuration | UTF-8 BOM loading, duplicate alias refusal, four explicit frontend choices, saved-file overwrite refusal, and rejection of missing or multiple source selectors and incompatible frontend fields passed. Detection left the Graybox process set unchanged. |
 | Windows Service | HTTP, gRPC, and OPC UA temporary services under LocalService started, stopped, restarted their loopback listeners, and uninstalled. MCP service installation was refused. Graybox activation in the HTTP service returned `CoCreateInstance(IOPCServer)` with `0x80070005`. |
 
-The first MCP attempt stopped at a combined Quality and timestamp assertion in
-both Write modes. The output reported only the combined assertion. The rerun
-used a separate loopback HTTP adapter built from the same revision and compared
-both frontends' Device Read metadata for the same valid and invalid ItemIDs.
-The valid item returned Quality `32`, absent source timestamp, `VT_I4`, and
-`0x00000001` through both frontends in each mode. The invalid item preserved
-`0xC0040007`. The rerun completed with the same executable. The cause of the
-first assertion failure remains unconfirmed.
+#### Graybox Device Read metadata across frontends
+
+The first full run stopped at a combined Quality and timestamp assertion in
+both MCP Write modes. A targeted rerun completed with Quality `32`, an absent
+source timestamp, and HRESULT `0x00000001` through both HTTP and MCP. The
+instrumented reproduction of the full sequence captured a second source state
+on the same executable.
+
+| Stage in the instrumented reproduction | Frontend | Item type | Raw Quality | Source timestamp | HRESULT |
+|---|---|---|---|---|---|
+| Initial foreground Device Read | HTTP | `VT_I4` | `32` | Absent | `0x00000001` |
+| After gRPC and OPC UA, both MCP Write modes | MCP and an HTTP reference | `VT_I4` | `192` | Present | `0x00000000` |
+
+The old assertion required the first set of metadata. Three further MCP
+reads and the HTTP reference returned the second set in each Write mode.
+The corrected full run repeated the same sequence with the same executable.
+It recorded Quality `192`, a present source timestamp and HRESULT
+`0x00000000` through both frontends in both Write modes. The unknown ItemID
+preserved `0xC0040007`.
+
+The [manual read probe](../../scripts/mcp/check_graybox_read.py) compares MCP
+Device Read with a read-only loopback HTTP adapter using the same executable
+and explicit local CLSID. It compares ItemID order, actual and canonical
+VARTYPE, raw Quality, timestamp presence, access rights and both HRESULTs.
+Timestamp instants can differ between successive Device Reads. The probe
+prints metadata only and accepts either observed source state when both
+frontends agree.
+
+```powershell
+python scripts/mcp/check_graybox_read.py --adapter .\adapter.exe --clsid '{2C2E36B7-FE45-4A29-BF89-9BFBA6A40857}'
+```
+
+#### Registration limit with a mixed Device Read
+
+A fresh 386 HTTP process used `OPCDA_MAX_REGISTERED_ITEMS=1` with Write
+disabled. It sent the following Device Reads in order.
+
+| Request | Expected | Observed |
+|---|---|---|
+| An unknown ItemID followed by two copies of `enum.color` | The unknown item returns `0xC0040007`. Both valid rows use the one available registration. | The unknown item returned the expected HRESULT. Both valid rows returned `REGISTERED_ITEM_LIMIT_EXCEEDED` even though the failed registration left space. |
+| `enum.color` alone | The item can use the available registration or reuse its cached handle. | The read succeeded. |
+| A different valid ItemID after the successful read | The full registration cache refuses another item. | `REGISTERED_ITEM_LIMIT_EXCEEDED` was returned. |
+
+The first request failed the boundary check. The standalone and full-cache
+controls passed. The execution record contains metadata and error codes only.
 
 With Smart App Control enabled, initial launch attempts produced App Control
 event `3077` for both artifacts. The policy was disabled during each authorized
@@ -82,6 +119,11 @@ run rebuilt the executable from the same adapter revision.
 | OPC UA | Session and address-space operations, ordered arrays, array Write refusal, and changed and restored array notifications passed. The analog item exposed `EURange` and observation of its percent deadband passed. DA outage handling discarded pending values and required explicit monitored-item creation before delivery resumed. |
 | MCP stdio | Tools, array round trips, and notifications passed. The same session handled an outage, discarded its invalidated group, refused Write without replay, and delivered after explicit resubscription. |
 | Setup and service | Registration-only detection, guided setup, and service-mode access through HTTP, gRPC and OPC UA passed under LocalService. Removal cleaned up the temporary registrations. |
+
+The laptop rerun exercised disconnected startup diagnostics with an unregistered
+CLSID. The controlled source outage and reconnect results above used the
+fixture. Subscribe is outside the HTTP frontend's scope, and Windows Service
+mode is outside MCP stdio's scope. The OPC UA runs used `SecurityPolicy None`.
 
 ## Matrix
 

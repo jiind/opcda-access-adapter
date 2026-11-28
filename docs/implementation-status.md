@@ -54,6 +54,9 @@ source provides the canonical VARTYPE. Array Write remains unsupported.
 run links, resource deltas, and scenario limits. It remains the authority for
 executed compatibility claims.
 
+The real-DA fixture's guided service checks verify both startup records after
+the Application Event Log record ID captured before installation.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

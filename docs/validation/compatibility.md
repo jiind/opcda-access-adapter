@@ -47,7 +47,7 @@ check and the remaining suite. [Fixture run](https://github.com/jiind/opcda-acce
 String coverage included Unicode and an empty element during write round
 trips. The probes recorded operation outcomes and metadata. Real-source
 results for other array types, multiple dimensions, nonzero lower bounds,
-and change-driven array notifications remain open.
+and change-driven OPC UA array notifications remain open.
 
 PR #242 head `002c3e45b47c873f31c1017a9d99cc4e82869791` extended the fixture
 probe to read the OPC UA attributes after reading the arrays. On 386 and
@@ -56,6 +56,12 @@ amd64, the Int32 and String nodes reported their element `DataType` and
 matching scalar returned `Bad_TypeMismatch` for the known array node. The
 386 job passed on rerun after its first attempt stopped at the HTTP service
 Event Log check. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46137910254/attempts/2)
+
+PR #245 head `9cd344271ae1d98135ba6a0717accb337d2e8836` passed on 386 and
+amd64. gRPC Subscribe and the MCP subscription tools received the initial,
+changed, and restored values for both fixture arrays with their VARTYPE,
+shape, and element order intact. Each operation restored the original value
+and released its DA group. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46139923388)
 
 ## Recorded result: MCP stdio and OPC Foundation fixture
 

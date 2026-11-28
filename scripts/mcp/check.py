@@ -130,31 +130,46 @@ def check_fixture_arrays(client, write_enabled):
             assert len(rows) == 1, "array Read changed the item count"
             return check(rows[0], elements)
 
-        original = read(initial)
-        group = client.tool("da_subscribe", {"items": [{"itemId": item_id}], "requestedUpdateRateMs": 250})
-        try:
-            assert group["activeItemCount"] == 1, "array item was not activated"
-            rows = client.tool("da_subscription_next", {"subscriptionId": group["subscriptionId"], "waitMs": 5000})["results"]
-            assert len(rows) == 1, "initial array notification missing"
-            check(rows[0], initial)
-        finally:
-            client.tool("da_unsubscribe", {"subscriptionId": group["subscriptionId"]})
-        if not write_enabled:
-            continue
-
         def write(shape):
             rows = client.tool("da_write", {"items": [{
                 "itemId": item_id, "dataType": array_type, "valueEncoding": "array", "value": shape,
             }]})["results"]
             assert len(rows) == 1 and rows[0]["ok"] and rows[0]["itemId"] == item_id, "array Write failed"
 
+        def await_notification(group_id, elements):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                rows = client.tool("da_subscription_next", {"subscriptionId": group_id, "waitMs": 1000})["results"]
+                assert len(rows) <= 1, "array callback carried multiple values for one item"
+                if rows:
+                    shape = rows[0].get("value")
+                    assert isinstance(shape, dict), "array callback had no value object"
+                    received = shape.get("elements")
+                    assert isinstance(received, list), "array callback had no elements"
+                    check(rows[0], received)
+                    if received == elements:
+                        return
+            raise AssertionError("expected array callback missing")
+
+        original = read(initial)
+        group = client.tool("da_subscribe", {"items": [{"itemId": item_id}], "requestedUpdateRateMs": 250})
         try:
-            write(dict(original, elements=changed))
-            read(changed)
+            assert group["activeItemCount"] == 1, "array item was not activated"
+            await_notification(group["subscriptionId"], initial)
+            if write_enabled:
+                try:
+                    write(dict(original, elements=changed))
+                    await_notification(group["subscriptionId"], changed)
+                    read(changed)
+                finally:
+                    write(original)
+                await_notification(group["subscriptionId"], initial)
+                read(initial)
         finally:
-            write(original)
-        read(initial)
-    print(f"MCP_REAL_DA_ARRAY_PASS variants=2 initialCallbacks=true writeRoundTrip={str(write_enabled).lower()} valuesLogged=false")
+            client.tool("da_unsubscribe", {"subscriptionId": group["subscriptionId"]})
+        assert client.tool("da_status", {})["runtime"]["subscriptionCount"] == 0, "array group was not released"
+    enabled = str(write_enabled).lower()
+    print(f"MCP_REAL_DA_ARRAY_PASS variants=2 initialCallbacks=true writeRoundTrip={enabled} changeNotifications={enabled} valuesLogged=false")
 
 
 def scenario(executable, clsid, real_da, write_enabled):

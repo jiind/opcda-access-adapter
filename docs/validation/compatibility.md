@@ -199,14 +199,36 @@ SAFEARRAY coverage remains open.
   teardown and forced Go collection, verifies that a late notification cannot
   reach the retired subscription, and confirms the last COM reference
   releases the pin. This was a native test with a simulated callback.
-- Windows application control refused to launch the updated `386` adapter
-  with `WinError 4551`. The proposed Graybox rerun, including rapid MCP
-  cycling and recovery, is **BLOCKED** on that host.
+- Windows application control refused to launch earlier builds of the fixed
+  `386` adapter with `WinError 4551`.
 - The read-only COM inventory matched the installed Graybox CLSID and AppID.
   The AppID had no `LaunchPermission`, `AccessPermission`, or `RunAs`
   override in either registry view. The System log contained matching
   DistributedCOM `10016` events. The earlier LocalService activation result
   remains **BLOCKED**; no COM configuration changes were made.
+
+### Follow-up: Graybox rerun and startup diagnostics
+
+The same Windows laptop ran adapter commit
+`a04bea73c3362c699813eb0b12fe5af8648656f3`, built for `windows/386` with
+Go 1.26.0. The executable SHA-256 was
+`cdfcaad510c29b7d8aafc27fa692f5f8651680cdf4577ad94aa38502437c1adf`.
+
+- Foreground HTTP reported listener startup and a successful Graybox DA
+  connection in separate messages. A second run configured an unregistered
+  CLSID and kept its listener available. It reported
+  `CoCreateInstance(IOPCServer)` with `0x80040154` once across repeated
+  connection attempts.
+- The MCP client completed 100 rapid subscribe/unsubscribe cycles with Write
+  disabled and 100 with Write enabled. Both runs reached zero active groups,
+  handled stdin EOF with an owned group, and exited normally. The enabled
+  run also received change-driven `VT_BSTR` notifications, verified
+  latest-per-item delivery, and restored the test item. The probe recorded
+  counts and operation outcomes.
+- The executable's help and the Windows configuration-output regressions
+  passed on the laptop. The [Windows fixture workflow](https://github.com/jiind/opcda-access-adapter/actions/runs/46130629647)
+  verified separate listener-started and source-connected Application Event
+  Log records for HTTP and gRPC services on `386` and `amd64`.
 
 ## Recorded result: OPC Foundation DA 2.05a fixture
 

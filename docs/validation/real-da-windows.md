@@ -31,6 +31,9 @@ recorded in [ADR-0006](../design/adr/0006-real-da-validation-fixture.md).
 - initial, changed-value, and restored-value array notifications through
   gRPC Subscribe and the MCP subscription tools, with the DA group released
   after each case;
+- OPC UA Publish of the initial, changed, and restored Int32 array, using a
+  separate loopback HTTP adapter to write the fixture item and then restoring
+  its original value;
 - gRPC unary Status, root/nested Browse, ordered partial Read, default-disabled
   Write, strict typed Write, source-denied Write, and loopback listener bounds;
 - deterministic outage while the server is unregistered, explicit

@@ -312,7 +312,10 @@ function Test-OPCUAFrontend {
     Assert-True ($null -ne $script:OPCUAProbeExecutable) 'OPC UA probe path is required for OPC UA validation'
     $port = if ($AdapterArch -eq '386') { 18751 } else { 18752 }
     $adapter = $null
+    $arrayWriter = $null
     try {
+        $arrayWriter = Start-Adapter -WriteEnabled $true -Label 'opcua-array-writer'
+        $null = Wait-Connected -TimeoutSeconds 30
         $adapter = Start-OPCUAAdapter -Port $port -WriteEnabled $true -Label 'opcua'
         Invoke-NativeProcess -FilePath $script:OPCUAProbeExecutable -ArgumentList @(
             '-address', "127.0.0.1:$port",
@@ -320,6 +323,7 @@ function Test-OPCUAFrontend {
             '-security-policy-uri', 'urn:validation:security-policy:none',
             '-write-enabled',
             '-array-fixture',
+            '-array-writer-url', $script:BaseURL,
             # The subscription scenario waits on real source notifications, so
             # it needs a longer bound than the read-only path.
             '-timeout', '150s'
@@ -332,6 +336,7 @@ function Test-OPCUAFrontend {
     }
     finally {
         Stop-Adapter $adapter
+        Stop-Adapter $arrayWriter
         Stop-ServerProcesses
     }
 }

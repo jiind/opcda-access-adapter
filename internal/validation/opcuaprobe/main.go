@@ -39,18 +39,19 @@ func main() {
 	writeEnabled := flag.Bool("write-enabled", false,
 		"expect Write to be enabled and drive the subscription change scenario")
 	arrayFixture := flag.Bool("array-fixture", false, "verify the real DA fixture's array items")
+	arrayWriterURL := flag.String("array-writer-url", "", "loopback HTTP writer for the real DA fixture")
 	timeout := flag.Duration("timeout", time.Minute, "bounded scenario deadline")
 	flag.Parse()
 	if flag.NArg() != 0 || *endpointURL == "" || *policyURI == "" ||
-		*timeout <= 0 || *timeout > maximumProbeTimeout {
+		*timeout <= 0 || *timeout > maximumProbeTimeout || (!*arrayFixture && *arrayWriterURL != "") {
 		fmt.Fprintln(os.Stderr,
-			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-array-fixture] [-timeout DURATION]")
+			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-array-fixture] [-array-writer-url URL] [-timeout DURATION]")
 		os.Exit(2)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled, *arrayFixture); err != nil {
+	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled, *arrayFixture, *arrayWriterURL); err != nil {
 		fmt.Fprintf(os.Stderr, "OPCUA_REAL_DA_FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -90,7 +91,7 @@ type client struct {
 	policyURI string
 }
 
-func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled, arrayFixture bool) error {
+func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled, arrayFixture bool, arrayWriterURL string) error {
 	deadline, _ := ctx.Deadline()
 	conn, err := dialWhenReady(ctx, address)
 	if err != nil {
@@ -185,6 +186,13 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 		}
 	}
 
+	if arrayWriterURL != "" {
+		if err := c.validateFixtureArraySubscription(ctx, token, session, arrayWriterURL); err != nil {
+			return err
+		}
+		fmt.Println("OPCUA_REAL_DA_ARRAY_SUBSCRIPTION_PASS initial=true changed=true restored=true valuesLogged=false")
+	}
+
 	subscribed := false
 	if writeEnabled {
 		// The fixture's Test items are static, so a subscription would only
@@ -204,7 +212,7 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 }
 
 func (c *client) validateFixtureArrays(token opcua.ChannelSecurityToken, session opcua.NodeID, items []opcua.NodeID, writeEnabled bool) error {
-	intNode := opcua.ItemNodeID("ValidationArrays/Int32")
+	intNode := opcua.ItemNodeID(fixtureArrayItemID)
 	stringNode := opcua.ItemNodeID("ValidationArrays/String")
 	foundInt, foundString := false, false
 	for _, item := range items {
@@ -421,7 +429,7 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 		subscription.RevisedMaxKeepAliveCount)
 
 	const clientHandle = uint32(4242)
-	created, err := c.createMonitoredItem(token, session, subscription.SubscriptionID, target, clientHandle)
+	created, err := c.createMonitoredItem(token, session, subscription.SubscriptionID, target, clientHandle, opcua.TimestampsBoth)
 	if err != nil {
 		return err
 	}
@@ -486,7 +494,7 @@ func (c *client) createSubscription(token opcua.ChannelSecurityToken, session op
 	return decoder.ReadCreateSubscriptionResponse()
 }
 
-func (c *client) createMonitoredItem(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, node opcua.NodeID, handle uint32) (opcua.MonitoredItemCreateResult, error) {
+func (c *client) createMonitoredItem(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, node opcua.NodeID, handle uint32, timestamps opcua.TimestampsToReturn) (opcua.MonitoredItemCreateResult, error) {
 	encoder, err := opcua.NewEncoder(c.limits)
 	if err != nil {
 		return opcua.MonitoredItemCreateResult{}, err
@@ -494,7 +502,7 @@ func (c *client) createMonitoredItem(token opcua.ChannelSecurityToken, session o
 	encoder.WriteCreateMonitoredItemsRequest(opcua.CreateMonitoredItemsRequest{
 		Header:             requestHeader(session, 52),
 		SubscriptionID:     subscriptionID,
-		TimestampsToReturn: opcua.TimestampsBoth,
+		TimestampsToReturn: timestamps,
 		ItemsToCreate: []opcua.MonitoredItemCreateRequest{{
 			ItemToMonitor:  opcua.ReadValueID{NodeID: node, AttributeID: opcua.AttributeValue},
 			MonitoringMode: opcua.MonitoringModeReporting,
@@ -570,23 +578,31 @@ func (c *client) awaitNotification(ctx context.Context, token opcua.ChannelSecur
 }
 
 func (c *client) publish(token opcua.ChannelSecurityToken, session opcua.NodeID) (opcua.PublishResponse, error) {
-	encoder, err := opcua.NewEncoder(c.limits)
+	decoder, err := c.publishReply(token, session)
 	if err != nil {
 		return opcua.PublishResponse{}, err
+	}
+	return decoder.ReadPublishResponse()
+}
+
+func (c *client) publishReply(token opcua.ChannelSecurityToken, session opcua.NodeID) (*opcua.Decoder, error) {
+	encoder, err := opcua.NewEncoder(c.limits)
+	if err != nil {
+		return nil, err
 	}
 	encoder.WritePublishRequest(opcua.PublishRequest{Header: requestHeader(session, 53)})
 	body, err := encoder.Bytes()
 	if err != nil {
-		return opcua.PublishResponse{}, err
+		return nil, err
 	}
 	identifier, decoder, err := c.call(token, 53, body)
 	if err != nil {
-		return opcua.PublishResponse{}, fmt.Errorf("publish: %w", err)
+		return nil, fmt.Errorf("publish: %w", err)
 	}
 	if identifier != opcua.PublishResponseEncodingID {
-		return opcua.PublishResponse{}, fmt.Errorf("publish answered with service %d", identifier)
+		return nil, fmt.Errorf("publish answered with service %d", identifier)
 	}
-	return decoder.ReadPublishResponse()
+	return decoder, nil
 }
 
 func (c *client) writeFloat(token opcua.ChannelSecurityToken, session opcua.NodeID, node opcua.NodeID, value float32) error {

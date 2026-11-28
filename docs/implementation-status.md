@@ -63,6 +63,11 @@ executed compatibility claims.
 The real-DA fixture's guided service checks verify both startup records after
 the Application Event Log record ID captured before installation.
 
+OPC UA deduplicates the DA registration when multiple MonitoredItems monitor
+the same ItemID. Each reporting MonitoredItem receives the source changes at
+its own revised sampling interval. A duplicate client handle is rejected even
+within a single create request.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

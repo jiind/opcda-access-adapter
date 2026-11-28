@@ -674,6 +674,41 @@ func TestDuplicateClientHandleIsRefused(t *testing.T) {
 	}
 }
 
+func TestDuplicateClientHandleInOneCreateRequestIsRefused(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscription(t, service)
+	items := make([]MonitoredItemCreateRequest, 3)
+	for index, entry := range []struct {
+		itemID opcda.DAItemID
+		handle uint32
+	}{
+		{"Test/Int32", 5}, {"Test/Float", 5}, {"Test/Float", 6},
+	} {
+		items[index] = MonitoredItemCreateRequest{
+			ItemToMonitor:  ReadValueID{NodeID: ItemNodeID(entry.itemID), AttributeID: AttributeValue},
+			MonitoringMode: MonitoringModeReporting,
+			RequestedParameters: MonitoringParameters{
+				ClientHandle: entry.handle, Filter: NullExtensionObject(),
+			},
+		}
+	}
+	response, err := service.CreateMonitoredItems(context.Background(), testSession, CreateMonitoredItemsRequest{
+		Header:             RequestHeader{AdditionalHeader: NullExtensionObject()},
+		SubscriptionID:     id,
+		TimestampsToReturn: TimestampsBoth,
+		ItemsToCreate:      items,
+	}, channelEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []StatusCode{StatusGood, StatusBadInvalidArgument, StatusGood} {
+		if got := response.Results[index].StatusCode; got != want {
+			t.Errorf("result %d = %s, want %s", index, got.Hex(), want.Hex())
+		}
+	}
+}
+
 // A subscription belongs to the session that created it.
 func TestSubscriptionsAreBoundToTheirSession(t *testing.T) {
 	runtime := &subscribingRuntime{}
@@ -1546,6 +1581,50 @@ func TestASlowItemIsPacedToTheIntervalItWasPromised(t *testing.T) {
 	if value, ok := after[0].Value.Value.Value.(int32); !ok || value != 3 {
 		t.Fatalf("reported %#v, want the newest value", after[0].Value.Value.Value)
 	}
+}
+
+func TestDAReportReachesEachMonitoredItemForTheSameNode(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscription(t, service)
+	const itemID = "Test/Int32"
+	const fastHandle, slowHandle = 1, 2
+	for _, result := range []MonitoredItemCreateResult{
+		monitorAt(t, service, id, ItemNodeID(itemID), fastHandle, 250),
+		monitorAt(t, service, id, ItemNodeID(itemID), slowHandle, 1000),
+	} {
+		if result.StatusCode != StatusGood {
+			t.Fatalf("create monitored item: %s", result.StatusCode.Hex())
+		}
+	}
+	requests := runtime.subscribeRequests()
+	if got := requests[len(requests)-1].Items; len(got) != 1 || got[0] != itemID {
+		t.Fatalf("DA group items = %v, want one %s", got, itemID)
+	}
+
+	check := func(now time.Time, value int32, handles ...uint32) {
+		t.Helper()
+		notifications := publishOnce(t, service, now)
+		if len(notifications) != len(handles) {
+			t.Fatalf("received %d notifications, want %d", len(notifications), len(handles))
+		}
+		pending := make(map[uint32]bool, len(handles))
+		for _, handle := range handles {
+			pending[handle] = true
+		}
+		for _, notification := range notifications {
+			if !pending[notification.ClientHandle] || notification.Value.Status != StatusGood || notification.Value.Value.Value != value {
+				t.Fatalf("unexpected notification for handle %d", notification.ClientHandle)
+			}
+			delete(pending, notification.ClientHandle)
+		}
+	}
+	da := runtime.latest()
+	da.push(daNotification(itemID, 1, QualityGood))
+	check(channelEpoch, 1, fastHandle, slowHandle)
+	da.push(daNotification(itemID, 2, QualityGood))
+	check(channelEpoch.Add(300*time.Millisecond), 2, fastHandle)
+	check(channelEpoch.Add(time.Second), 2, slowHandle)
 }
 
 // publishOnce runs one publishing cycle at a named time and requires it to have

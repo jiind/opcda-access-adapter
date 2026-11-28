@@ -107,12 +107,12 @@ func (c *client) validateFixtureArraySubscription(ctx context.Context, token opc
 		err = errors.Join(err, c.deleteSubscription(token, session, id))
 	}()
 	const handle = 4444
-	monitored, err := c.createMonitoredItem(token, session, id, opcua.ItemNodeID(fixtureArrayItemID), handle, opcua.TimestampsNeither)
+	monitored, err := c.createMonitoredItems(token, session, id, opcua.ItemNodeID(fixtureArrayItemID), opcua.TimestampsNeither, handle)
 	if err != nil {
 		return err
 	}
-	if monitored.StatusCode != opcua.StatusGood {
-		return fmt.Errorf("array MonitoredItem returned %s", monitored.StatusCode.Hex())
+	if monitored[0].StatusCode != opcua.StatusGood {
+		return fmt.Errorf("array MonitoredItem returned %s", monitored[0].StatusCode.Hex())
 	}
 	original := []int32{2, -7, 31}
 	changed := []int32{-31, 7, 2}

@@ -1147,6 +1147,9 @@ func (s *SubscriptionService) CreateMonitoredItems(ctx context.Context, sessionT
 		results[index] = result
 		created[index] = item
 		if item != nil {
+			// Later entries in this request must see handles already accepted.
+			subscription.items[item.id] = item
+			subscription.byHandle[item.clientHandle] = item
 			accepted = append(accepted, item)
 		}
 	}
@@ -1154,12 +1157,6 @@ func (s *SubscriptionService) CreateMonitoredItems(ctx context.Context, sessionT
 		return s.monitoredItemsResponse(request, results, now), nil
 	}
 
-	// Register the accepted items, then rebuild the DA subscription over the
-	// full set.
-	for _, item := range accepted {
-		subscription.items[item.id] = item
-		subscription.byHandle[item.clientHandle] = item
-	}
 	rebuildErr := s.rebuildDASubscription(ctx, subscription, now)
 	if rebuildErr == nil {
 		// Now that the group exists the source has revised its update rate.
@@ -1720,35 +1717,26 @@ func (s *SubscriptionService) collect(ctx context.Context, subscription *uaSubsc
 
 	values := subscription.da.Drain()
 	for _, value := range values {
-		item := subscription.itemForDAItemID(value.ItemID)
-		if item == nil {
-			continue
+		// One DA callback sample feeds every reporting monitor of this ItemID.
+		for _, item := range subscription.items {
+			if item.itemID != value.ItemID || item.mode != MonitoringModeReporting || item.notReadable {
+				continue
+			}
+			// A notification carries the same DA metadata an AddItems result does,
+			// so it teaches the address space what Browse could not.
+			s.space.LearnFromRead(item.nodeID, value.CanonicalType, value.AccessRights)
+			notification := dataValueForSubscription(value, item.timestamps, now)
+			// Clause 5.2: each monitored item reports a changed semantic generation once.
+			if generation := s.space.SemanticGeneration(item.itemID); generation != item.semanticGeneration {
+				notification.Status = notification.Status.WithSemanticsChanged()
+				item.semanticGeneration = generation
+			}
+			// Keep the newest value for each item's own sampling interval.
+			if item.held == nil {
+				subscription.heldOrder = append(subscription.heldOrder, item.id)
+			}
+			item.held = &notification
 		}
-		// A disabled item is not reported, which is what MonitoringMode
-		// Disabled and Sampling both mean for reporting.
-		if item.mode != MonitoringModeReporting {
-			continue
-		}
-		// A notification carries the same DA metadata an AddItems result does,
-		// so it teaches the address space what Browse could not.
-		s.space.LearnFromRead(item.nodeID, value.CanonicalType, value.AccessRights)
-		notification := dataValueForSubscription(value, item.timestamps, now)
-		// Clause 5.2: the bit goes on one data change notification per
-		// monitored item that samples values at the time the change happened.
-		// Comparing generations gives exactly that -- the item carries it once
-		// and then agrees with the address space again.
-		if generation := s.space.SemanticGeneration(item.itemID); generation != item.semanticGeneration {
-			notification.Status = notification.Status.WithSemanticsChanged()
-			item.semanticGeneration = generation
-		}
-		// The newest value wins. queueSize is one, so an older value in the
-		// same sampling interval is one the client would have overwritten
-		// anyway.
-		if item.held == nil {
-			subscription.heldOrder = append(subscription.heldOrder, item.id)
-		}
-		held := notification
-		item.held = &held
 	}
 	s.flushHeld(subscription, now)
 }
@@ -1845,15 +1833,6 @@ func (subscription *uaSubscription) daRevisedInterval() float64 {
 		return subscription.publishingInterval
 	}
 	return float64(revised / time.Millisecond)
-}
-
-func (subscription *uaSubscription) itemForDAItemID(itemID opcda.DAItemID) *monitoredItem {
-	for _, item := range subscription.items {
-		if item.itemID == itemID {
-			return item
-		}
-	}
-	return nil
 }
 
 // dataValueForSubscription maps one DA notification onto a DataValue using the

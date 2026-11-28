@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 const maximumProbeTimeout = 2 * time.Minute
@@ -145,6 +147,9 @@ func validateScenario(ctx context.Context, client opcdav1.OPCDAAccessClient, exp
 	if unknown.Ok || unknown.ItemId != "__opcda_adapter_invalid_item__" || unknown.Hresult == nil || unknown.Hresult.Raw != 0xC0040007 || unknown.Hresult.Value >= 0 {
 		return "", fmt.Errorf("invalid ItemID did not preserve ordered OPC_E_UNKNOWNITEMID")
 	}
+	if err := validateFixtureArrays(ctx, client, writeEnabled); err != nil {
+		return "", err
+	}
 
 	if !writeEnabled {
 		_, err = client.Write(ctx, &opcdav1.DAWriteRequest{Items: []*opcdav1.DAWriteItem{{
@@ -193,6 +198,96 @@ func validateScenario(ctx context.Context, client opcdav1.OPCDAAccessClient, exp
 		return "", err
 	}
 	return properties, validateSubscribeStream(ctx, client)
+}
+
+func validateFixtureArrays(ctx context.Context, client opcdav1.OPCDAAccessClient, writeEnabled bool) error {
+	for _, fixture := range []struct {
+		itemID   string
+		element  opcda.DAVarType
+		original []*opcdav1.DAScalarValue
+		changed  []*opcdav1.DAScalarValue
+	}{
+		{"ValidationArrays/Int32", opcda.VTI4, fixtureI4s(2, -7, 31), fixtureI4s(-31, 7, 2)},
+		{"ValidationArrays/String", opcda.VTBSTR, fixtureStrings("배열", "fixture"), fixtureStrings("", "변경")},
+	} {
+		read := func(expected []*opcdav1.DAScalarValue) (*opcdav1.DAReadResult, error) {
+			response, err := client.Read(ctx, &opcdav1.DAReadRequest{Items: []*opcdav1.DAReadItem{{ItemId: fixture.itemID}}})
+			if err != nil {
+				return nil, fmt.Errorf("array Read RPC: %w", err)
+			}
+			if len(response.Results) != 1 || !response.Results[0].Ok || response.Results[0].ItemId != fixture.itemID {
+				return nil, fmt.Errorf("array Read failed or changed the ItemID")
+			}
+			item := response.Results[0]
+			wantType := uint32(fixture.element | opcda.VTArray)
+			array := item.ArrayValue
+			if item.DataType.GetRaw() != wantType || item.CanonicalDataType.GetRaw() != wantType || item.Value != nil ||
+				array == nil || array.ElementDataType.GetRaw() != uint32(fixture.element) || len(array.Dimensions) != 1 ||
+				array.Dimensions[0].LowerBound != 0 || int(array.Dimensions[0].Length) != len(expected) || len(array.Elements) != len(expected) {
+				return nil, fmt.Errorf("array Read did not preserve the VARTYPE, shape or lower bound")
+			}
+			for index, value := range expected {
+				if !proto.Equal(array.Elements[index], value) {
+					return nil, fmt.Errorf("array Read changed an ordered element")
+				}
+			}
+			return item, nil
+		}
+		original, err := read(fixture.original)
+		if err != nil {
+			return err
+		}
+		if !writeEnabled {
+			continue
+		}
+		write := func(array *opcdav1.DAArrayValue) error {
+			response, err := client.Write(ctx, &opcdav1.DAWriteRequest{Items: []*opcdav1.DAWriteItem{{
+				ItemId: fixture.itemID, DataType: original.CanonicalDataType, ArrayValue: array,
+			}}})
+			if err != nil {
+				return fmt.Errorf("array Write RPC: %w", err)
+			}
+			if len(response.Results) != 1 || !response.Results[0].Ok || response.Results[0].ItemId != fixture.itemID ||
+				response.Results[0].Hresult == nil || response.Results[0].Hresult.Raw != 0 {
+				return fmt.Errorf("array Write failed")
+			}
+			return nil
+		}
+		changed := &opcdav1.DAArrayValue{
+			ElementDataType: original.ArrayValue.ElementDataType,
+			Dimensions:      original.ArrayValue.Dimensions,
+			Elements:        fixture.changed,
+		}
+		changeErr := write(changed)
+		if changeErr == nil {
+			_, changeErr = read(fixture.changed)
+		}
+		restoreErr := write(original.ArrayValue)
+		if restoreErr == nil {
+			_, restoreErr = read(fixture.original)
+		}
+		if err := errors.Join(changeErr, restoreErr); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("GRPC_REAL_DA_ARRAY_PASS variants=2 shape=true writeRoundTrip=%t valuesLogged=false\n", writeEnabled)
+	return nil
+}
+
+func fixtureI4s(values ...int32) []*opcdav1.DAScalarValue {
+	result := make([]*opcdav1.DAScalarValue, 0, len(values))
+	for _, value := range values {
+		result = append(result, &opcdav1.DAScalarValue{Value: &opcdav1.DAScalarValue_I4Value{I4Value: value}})
+	}
+	return result
+}
+
+func fixtureStrings(values ...string) []*opcdav1.DAScalarValue {
+	result := make([]*opcdav1.DAScalarValue, 0, len(values))
+	for _, value := range values {
+		result = append(result, &opcdav1.DAScalarValue{Value: &opcdav1.DAScalarValue_BstrValue{BstrValue: value}})
+	}
+	return result
 }
 
 var subscribeItems = []string{"Test/Int32", "Test/Float", "Test/String"}

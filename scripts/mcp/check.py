@@ -107,6 +107,55 @@ class Client:
         assert b'"value":' not in self.stderr and b"value=" not in self.stderr, "process value found in stderr"
 
 
+def check_fixture_arrays(client, write_enabled):
+    fixtures = (
+        ("ValidationArrays/Int32", "VT_I4", [2, -7, 31], [-31, 7, 2]),
+        ("ValidationArrays/String", "VT_BSTR", ["배열", "fixture"], ["", "변경"]),
+    )
+    for item_id, element_type, initial, changed in fixtures:
+        array_type = element_type + "|VT_ARRAY"
+
+        def check(item, elements):
+            assert item["ok"] and item["itemId"] == item_id, "array operation changed the ItemID or failed"
+            assert item["dataType"]["name"] == item["canonicalDataType"]["name"] == array_type, "array VARTYPE changed"
+            shape = item["value"]
+            assert item["valueEncoding"] == "array" and shape["elementDataType"]["name"] == element_type, "array element type changed"
+            assert shape["dimensions"] == [{"lowerBound": 0, "length": len(elements)}], "array dimensions changed"
+            assert shape["elements"] == elements, "ordered array elements changed"
+            return shape
+
+        def read(elements):
+            rows = client.tool("da_read", {"items": [{"itemId": item_id}]})["results"]
+            assert len(rows) == 1, "array Read changed the item count"
+            return check(rows[0], elements)
+
+        original = read(initial)
+        group = client.tool("da_subscribe", {"items": [{"itemId": item_id}], "requestedUpdateRateMs": 250})
+        try:
+            assert group["activeItemCount"] == 1, "array item was not activated"
+            rows = client.tool("da_subscription_next", {"subscriptionId": group["subscriptionId"], "waitMs": 5000})["results"]
+            assert len(rows) == 1, "initial array notification missing"
+            check(rows[0], initial)
+        finally:
+            client.tool("da_unsubscribe", {"subscriptionId": group["subscriptionId"]})
+        if not write_enabled:
+            continue
+
+        def write(shape):
+            rows = client.tool("da_write", {"items": [{
+                "itemId": item_id, "dataType": array_type, "valueEncoding": "array", "value": shape,
+            }]})["results"]
+            assert len(rows) == 1 and rows[0]["ok"] and rows[0]["itemId"] == item_id, "array Write failed"
+
+        try:
+            write(dict(original, elements=changed))
+            read(changed)
+        finally:
+            write(original)
+        read(initial)
+    print(f"MCP_REAL_DA_ARRAY_PASS variants=2 initialCallbacks=true writeRoundTrip={str(write_enabled).lower()} valuesLogged=false")
+
+
 def scenario(executable, clsid, real_da, write_enabled):
     """실행 파일의 초기화·도구·DA 경로·EOF를 실제 stdio로 검증한다."""
     # 1. 환경변수와 합쳐지지 않는 명시적 단일 소스 설정을 만든다.
@@ -144,6 +193,7 @@ def scenario(executable, clsid, real_da, write_enabled):
             read = client.tool("da_read", {"items": [{"itemId": "Test/Int32"}, {"itemId": "__opcda_adapter_invalid_item__"}]})["results"]
             assert read[0]["ok"] and read[0]["dataType"]["name"] == "VT_I4" and read[0]["quality"] == 192 and read[0]["timestampPresent"], "DA metadata changed"
             assert not read[1]["ok"] and read[1]["hresult"]["hex"] == "0xC0040007", "per-item error lost"
+            check_fixture_arrays(client, write_enabled)
             available = client.tool("da_available_item_properties", {"itemId": "Test/Float"})
             ids = [prop["propertyId"] for prop in available["properties"] if prop["propertyId"] not in (2, 3, 4)]
             if ids:

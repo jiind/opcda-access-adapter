@@ -319,6 +319,7 @@ function Test-OPCUAFrontend {
             '-endpoint-url', "opc.tcp://127.0.0.1:$port",
             '-security-policy-uri', 'urn:validation:security-policy:none',
             '-write-enabled',
+            '-array-fixture',
             # The subscription scenario waits on real source notifications, so
             # it needs a longer bound than the read-only path.
             '-timeout', '150s'
@@ -986,6 +987,56 @@ function Read-Items {
     return Require-Status -Response $response -Expected 200 -Operation 'Read'
 }
 
+function Read-ArrayFixtureValue {
+    param([string]$ItemID, [string]$ElementType, [object[]]$Elements)
+
+    $response = Read-Items @($ItemID)
+    Assert-True ($response.results.Count -eq 1) 'array Read returned a different item count'
+    $item = $response.results[0]
+    $arrayType = "$ElementType|VT_ARRAY"
+    Assert-True ($item.ok -and $item.itemId -ceq $ItemID -and
+        $item.dataType.name -ceq $arrayType -and $item.canonicalDataType.name -ceq $arrayType -and
+        $item.valueEncoding -ceq 'array') 'array Read did not preserve the ItemID or VARTYPE'
+    Assert-True ($item.value.elementDataType.name -ceq $ElementType -and $item.value.dimensions.Count -eq 1 -and
+        $item.value.dimensions[0].lowerBound -eq 0 -and $item.value.dimensions[0].length -eq $Elements.Count) `
+        'array Read did not preserve the element type, shape or lower bound'
+    $actual = ConvertTo-Json -InputObject @($item.value.elements) -Compress
+    $expected = ConvertTo-Json -InputObject $Elements -Compress
+    Assert-True ($actual -ceq $expected) 'array Read did not preserve the ordered elements'
+    return $item.value
+}
+
+function Write-ArrayFixtureValue {
+    param([string]$ItemID, [string]$ElementType, $Value)
+
+    $body = ConvertTo-RequestJSON @{ items = @(@{
+        itemId = $ItemID; dataType = "$ElementType|VT_ARRAY"; valueEncoding = 'array'; value = $Value
+    }) }
+    $response = Send-AdapterRequest -Method POST -Path '/v1/write' -Body $body
+    $result = Require-Status -Response $response -Expected 200 -Operation 'array Write'
+    Assert-True ($result.results.Count -eq 1 -and $result.results[0].ok -and
+        $result.results[0].itemId -ceq $ItemID -and $result.results[0].hresult.value -eq 0) 'array Write failed'
+}
+
+function Test-HTTPArrayRoundTrip {
+    foreach ($fixture in @(
+        @{ ItemID = 'ValidationArrays/Int32'; Type = 'VT_I4'; Original = @(2, -7, 31); Changed = @(-31, 7, 2) },
+        @{ ItemID = 'ValidationArrays/String'; Type = 'VT_BSTR'; Original = @('배열', 'fixture'); Changed = @('', '변경') }
+    )) {
+        $original = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Original
+        $changed = @{ elementDataType = $original.elementDataType; dimensions = $original.dimensions; elements = $fixture.Changed }
+        try {
+            Write-ArrayFixtureValue $fixture.ItemID $fixture.Type $changed
+            $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Changed
+        }
+        finally {
+            Write-ArrayFixtureValue $fixture.ItemID $fixture.Type $original
+        }
+        $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Original
+    }
+    Write-Host 'HTTP_REAL_DA_ARRAY_PASS variants=2 shape=true restored=true valuesLogged=false'
+}
+
 function Get-ResourceSample {
     param([Diagnostics.Process]$Process)
 
@@ -1233,6 +1284,8 @@ try {
     $writeStatus = Wait-Connected
     Write-Host 'Write-enabled local-COM connection established'
     Assert-True ([bool]$writeStatus.writeEnabled) 'explicit Write enablement was not reported'
+
+    Test-HTTPArrayRoundTrip
 
     $floatRead = Read-Items @('Test/Float')
     $float = $floatRead.results[0]

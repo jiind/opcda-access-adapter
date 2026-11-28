@@ -148,6 +148,38 @@ if ($configText.IndexOf($everyoneAccessNeedle, [StringComparison]::Ordinal) -lt 
     throw 'the pinned test configuration no longer has exactly one expected everyone-access marker'
 }
 $configText = $configText.Replace($everyoneAccessNeedle, 'AllowEveryoneAccess="false"')
+$serverClosingTag = '</Server>'
+if ([regex]::Matches($configText, $serverClosingTag).Count -ne 1) {
+    throw 'the pinned test configuration no longer has exactly one Server closing tag'
+}
+# The pinned DA 2.05a sample uses these ArrayOf types through the same cache
+# implementation. Keep the original Test branch intact for the scalar probes.
+$arrayFixture = @'
+  <BrowseElement ElementName="ValidationArrays">
+    <Children>
+      <BrowseElement ElementName="Int32">
+        <Item>
+          <Value xsi:type="ArrayOfInt">
+            <Element>2</Element>
+            <Element>-7</Element>
+            <Element>31</Element>
+          </Value>
+          <Property PropertyID="6" xsi:type="xsd:float">100</Property>
+        </Item>
+      </BrowseElement>
+      <BrowseElement ElementName="String">
+        <Item>
+          <Value xsi:type="ArrayOfString">
+            <Element>배열</Element>
+            <Element>fixture</Element>
+          </Value>
+          <Property PropertyID="6" xsi:type="xsd:float">100</Property>
+        </Item>
+      </BrowseElement>
+    </Children>
+  </BrowseElement>
+'@
+$configText = $configText.Replace($serverClosingTag, "$arrayFixture`r`n$serverClosingTag")
 [IO.File]::WriteAllText($stagedConfig, $configText, [Text.UTF8Encoding]::new($false))
 
 Invoke-DefenderGate -Path $stage

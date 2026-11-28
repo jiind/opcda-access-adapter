@@ -25,6 +25,9 @@ recorded in [ADR-0006](../design/adr/0006-real-da-validation-fixture.md).
 - ordered partial batch failure with `OPC_E_UNKNOWNITEMID`;
 - default-disabled Write, strict VARTYPE mismatch, typed source Write, and a
   source-denied Write to a read-only item;
+- one-dimensional zero-based Int32 and BSTR SAFEARRAY Read, Write, and
+  restoration through HTTP, gRPC, and MCP, plus initial array callbacks in
+  MCP and the OPC UA array wire representation and Write refusal;
 - gRPC unary Status, root/nested Browse, ordered partial Read, default-disabled
   Write, strict typed Write, source-denied Write, and loopback listener bounds;
 - deterministic outage while the server is unregistered, explicit

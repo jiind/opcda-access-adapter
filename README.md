@@ -139,7 +139,7 @@ Subscribe, and reconnect. Their frontend coverage differs:
 | DA source | Tested version | Windows / adapter | Frontends exercised |
 |---|---|---|---|
 | OPC Foundation OPC Classic Core Components TestServer | Source commit `efe0d1d1` | Server 2025 / `386`, `amd64` | HTTP, gRPC, OPC UA, MCP; automated fixture runs |
-| Graybox Gray Simulator | File `1.7.9.701`, product `1.7.0.0` | Build `10.0.26200.9168` / `386` | HTTP, gRPC, read-only OPC UA; one manual installation |
+| Graybox Gray Simulator | File `1.7.9.701`, product `1.7.0.0` | Build `10.0.26300.10075` / `386` | HTTP, gRPC, OPC UA, MCP; [Windows execution record](docs/validation/compatibility.md#graybox-on-the-windows-laptop) |
 
 The fixture does not establish vendor compatibility. The Graybox result applies
 to one operator-supplied copy whose provenance is not independently established.

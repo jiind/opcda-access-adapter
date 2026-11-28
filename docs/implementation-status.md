@@ -61,6 +61,11 @@ and refreshes it when a later Read or notification reports a change.
 run links, resource deltas, and scenario limits. It remains the authority for
 executed compatibility claims.
 
+The [current Windows execution record](validation/compatibility.md#current-windows-execution-record)
+covers the same adapter revision on the Graybox laptop and the 386 and amd64
+OPC Foundation fixture jobs. It records the initial Graybox MCP assertion
+failure and the passing rerun of the same executable.
+
 The real-DA fixture's guided service checks verify both startup records after
 the Application Event Log record ID captured before installation.
 

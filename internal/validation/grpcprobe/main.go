@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -24,10 +25,12 @@ func main() {
 	address := flag.String("address", "127.0.0.1:50051", "gRPC endpoint")
 	expectedCLSID := flag.String("expected-clsid", "", "exact configured source CLSID")
 	writeEnabled := flag.Bool("write-enabled", false, "expect and exercise enabled typed Write")
+	reconnectSignals := flag.String("reconnect-signals", "", "controller directory for a real DA fixture outage")
 	timeout := flag.Duration("timeout", time.Minute, "bounded scenario deadline")
 	flag.Parse()
-	if flag.NArg() != 0 || *expectedCLSID == "" || *timeout <= 0 || *timeout > maximumProbeTimeout {
-		fmt.Fprintln(os.Stderr, "usage: grpcprobe -address HOST:PORT -expected-clsid CLSID [-write-enabled] [-timeout DURATION]")
+	if flag.NArg() != 0 || *expectedCLSID == "" || *timeout <= 0 || *timeout > maximumProbeTimeout ||
+		(*reconnectSignals != "" && !*writeEnabled) {
+		fmt.Fprintln(os.Stderr, "usage: grpcprobe -address HOST:PORT -expected-clsid CLSID [-write-enabled] [-reconnect-signals DIR] [-timeout DURATION]")
 		os.Exit(2)
 	}
 
@@ -47,6 +50,11 @@ func main() {
 	if err != nil {
 		fail("validate gRPC DA scenario", err)
 	}
+	if *reconnectSignals != "" {
+		if err := validateFixtureRecovery(ctx, client, *reconnectSignals); err != nil {
+			fail("validate gRPC DA recovery", err)
+		}
+	}
 	// Whether this source implements IOPCItemProperties is reported, not
 	// asserted. It is a property of the server, and OPC 10000-8 Table A.1 can
 	// only be validated against a source that has one.
@@ -61,7 +69,7 @@ func main() {
 var branchesNamed int
 
 func validateScenario(ctx context.Context, client opcdav1.OPCDAAccessClient, expectedCLSID string, writeEnabled bool) (string, error) {
-	statusResponse, err := waitConnected(ctx, client)
+	statusResponse, err := waitConnected(ctx, client, 1)
 	if err != nil {
 		return "", err
 	}
@@ -166,7 +174,7 @@ func validateScenario(ctx context.Context, client opcdav1.OPCDAAccessClient, exp
 	if err != nil || len(floatRead.Results) != 1 || !floatRead.Results[0].Ok || floatRead.Results[0].CanonicalDataType == nil || floatRead.Results[0].CanonicalDataType.Raw != uint32(opcda.VTR4) {
 		return "", fmt.Errorf("safe Write item was not readable as VT_R4")
 	}
-	r4, ok := floatRead.Results[0].Value.Value.(*opcdav1.DAScalarValue_R4Value)
+	r4, ok := floatRead.Results[0].GetValue().GetValue().(*opcdav1.DAScalarValue_R4Value)
 	if !ok {
 		return "", fmt.Errorf("VT_R4 Read did not use r4_value")
 	}
@@ -197,7 +205,7 @@ func validateScenario(ctx context.Context, client opcdav1.OPCDAAccessClient, exp
 	if err := validateItemProperties(ctx, client); err != nil {
 		return "", err
 	}
-	return properties, validateSubscribeStream(ctx, client)
+	return properties, validateSubscribeStream(ctx, client, r4.R4Value)
 }
 
 func validateFixtureArrays(ctx context.Context, client opcdav1.OPCDAAccessClient, writeEnabled bool) error {
@@ -351,7 +359,7 @@ var subscribeItems = []string{"Test/Int32", "Test/Float", "Test/String"}
 // the real source. The fixture's Test items are static, so the probe writes
 // distinct values through the ordinary typed Write path to require
 // change-driven notifications rather than only the server's initial snapshot.
-func validateSubscribeStream(ctx context.Context, client opcdav1.OPCDAAccessClient) error {
+func validateSubscribeStream(ctx context.Context, client opcdav1.OPCDAAccessClient, original float32) (err error) {
 	statusBefore, err := client.Status(ctx, &opcdav1.DAStatusRequest{})
 	if err != nil {
 		return fmt.Errorf("Status before Subscribe: %w", err)
@@ -408,26 +416,38 @@ func validateSubscribeStream(ctx context.Context, client opcdav1.OPCDAAccessClie
 	)
 
 	// The server's initial snapshot proves the stream carries real callbacks.
-	if err := receiveSubscriptionValue(stream, ""); err != nil {
+	if err := receiveSubscriptionValue(stream, subscribeItems, nil); err != nil {
 		return fmt.Errorf("initial notification: %w", err)
 	}
 
-	const changes = 2
-	for change := 0; change < changes; change++ {
-		written := float32(change+1) + 0.25
-		result, err := client.Write(ctx, &opcdav1.DAWriteRequest{Items: []*opcdav1.DAWriteItem{{
-			ItemId:   "Test/Float",
-			DataType: &opcdav1.DAVarType{Raw: uint32(opcda.VTR4), Name: "VT_R4"},
-			Value:    &opcdav1.DAScalarValue{Value: &opcdav1.DAScalarValue_R4Value{R4Value: written}},
-		}}})
-		if err != nil || len(result.Results) != 1 || !result.Results[0].Ok {
-			return fmt.Errorf("write to induce change %d failed", change+1)
+	restorationNeeded := true
+	defer func() {
+		if restorationNeeded {
+			restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			err = errors.Join(err, restoreFixtureFloat(restoreCtx, client, original))
 		}
-		if err := receiveSubscriptionValue(stream, "Test/Float"); err != nil {
-			return fmt.Errorf("change %d was not streamed: %w", change+1, err)
+	}()
+	changes := []float32{1.25, 2.25}
+	for index, written := range changes {
+		if written == original {
+			written = 3.25
+		}
+		if err := writeFixtureFloat(ctx, client, written); err != nil {
+			return fmt.Errorf("write to induce change %d: %w", index+1, err)
+		}
+		if err := receiveSubscriptionValue(stream, subscribeItems, &written); err != nil {
+			return fmt.Errorf("change %d was not streamed: %w", index+1, err)
 		}
 	}
-	fmt.Printf("grpc subscribe change-driven notifications verified changes=%d\n", changes)
+	if err := restoreFixtureFloat(ctx, client, original); err != nil {
+		return err
+	}
+	restorationNeeded = false
+	if err := receiveSubscriptionValue(stream, subscribeItems, &original); err != nil {
+		return fmt.Errorf("restored value was not streamed: %w", err)
+	}
+	fmt.Printf("grpc subscribe change-driven notifications verified changes=%d restored=true valuesLogged=false\n", len(changes))
 
 	statusDuring, err := client.Status(ctx, &opcdav1.DAStatusRequest{})
 	if err != nil {
@@ -462,10 +482,10 @@ func waitForSubscriptionRelease(ctx context.Context, client opcdav1.OPCDAAccessC
 }
 
 // receiveSubscriptionValue reads until an update carries a usable value, and
-// requires the exact ItemID when one is named. Process values are never printed.
-func receiveSubscriptionValue(stream opcdav1.OPCDAAccess_SubscribeClient, requiredItemID string) error {
-	known := make(map[string]struct{}, len(subscribeItems))
-	for _, itemID := range subscribeItems {
+// can require an exact value for the fixture Float. Process values are never printed.
+func receiveSubscriptionValue(stream opcdav1.OPCDAAccess_SubscribeClient, itemIDs []string, expectedFloat *float32) error {
+	known := make(map[string]struct{}, len(itemIDs))
+	for _, itemID := range itemIDs {
 		known[itemID] = struct{}{}
 	}
 	for {
@@ -478,8 +498,8 @@ func receiveSubscriptionValue(stream opcdav1.OPCDAAccess_SubscribeClient, requir
 			return fmt.Errorf("the stream sent a second created message")
 		}
 		// The pending set holds at most one entry per active item.
-		if len(update.Values) > len(subscribeItems) {
-			return fmt.Errorf("an update carried %d values, more than the %d subscribed items", len(update.Values), len(subscribeItems))
+		if len(update.Values) > len(itemIDs) {
+			return fmt.Errorf("an update carried %d values, more than the %d subscribed items", len(update.Values), len(itemIDs))
 		}
 		for _, value := range update.Values {
 			if _, ok := known[value.ItemId]; !ok {
@@ -500,19 +520,23 @@ func receiveSubscriptionValue(stream opcdav1.OPCDAAccess_SubscribeClient, requir
 			if !value.TimestampPresent && (value.TimestampUnixSeconds != 0 || value.TimestampNanos != 0) {
 				return fmt.Errorf("notification for %q contradicted its timestamp presence", value.ItemId)
 			}
-			if requiredItemID == "" || value.ItemId == requiredItemID {
-				return nil
+			if expectedFloat != nil {
+				actual, ok := value.Value.GetValue().(*opcdav1.DAScalarValue_R4Value)
+				if value.ItemId != fixtureFloatItem || !ok || math.Float32bits(actual.R4Value) != math.Float32bits(*expectedFloat) {
+					continue
+				}
 			}
+			return nil
 		}
 	}
 }
 
-func waitConnected(ctx context.Context, client opcdav1.OPCDAAccessClient) (*opcdav1.DAStatusResponse, error) {
+func waitConnected(ctx context.Context, client opcdav1.OPCDAAccessClient, minimumGeneration uint64) (*opcdav1.DAStatusResponse, error) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		response, err := client.Status(ctx, &opcdav1.DAStatusRequest{})
-		if err == nil && response.RuntimeState == string(opcda.RuntimeStateConnected) && response.Source != nil && response.Source.ConnectionGeneration >= 1 {
+		if err == nil && response.RuntimeState == string(opcda.RuntimeStateConnected) && response.Source != nil && response.Source.ConnectionGeneration >= minimumGeneration {
 			return response, nil
 		}
 		select {

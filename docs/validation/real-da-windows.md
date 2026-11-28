@@ -39,6 +39,8 @@ recorded in [ADR-0006](../design/adr/0006-real-da-validation-fixture.md).
   its original value;
 - gRPC unary Status, root/nested Browse, ordered partial Read, default-disabled
   Write, strict typed Write, source-denied Write, and loopback listener bounds;
+- gRPC Subscribe through a fixture outage, with an explicit stream error, a
+  refused Write, and delivery and cancellation on a newer connection generation;
 - MCP stdio over a fixture outage in one session, including group invalidation,
   Write refusal, explicit resubscription with a newer generation, and group
   release;
@@ -65,8 +67,8 @@ sample parses the first `-` or `/` in its entire command line as the start of
 normal server loop instead. The harness rejects such a path before execution
 and bounds every registration process to 30 seconds.
 
-No frontend exposes Subscribe, so the Subscribe probe drives the DA runtime
-directly instead of a listener. It creates one DA group per subscription,
+The direct Subscribe probe exercises the DA runtime without starting a
+frontend. It creates one DA group per subscription,
 requires real `IOPCDataCallback::OnDataChange` batches from the fixture, and
 checks that a drained batch never exceeds the subscription's active item count.
 

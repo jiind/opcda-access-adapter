@@ -1030,16 +1030,25 @@ function Test-GRPCWriteEnabledForeground {
     Assert-True ($null -ne $script:GRPCProbeExecutable) 'gRPC probe path is required for gRPC validation'
     $grpcPort = if ($AdapterArch -eq '386') { 18651 } else { 18652 }
     $grpcAdapter = $null
+    $probe = $null
+    $signals = Join-Path $script:WorkingDirectory 'grpc-reconnect'
+    New-Item -ItemType Directory -Path $signals | Out-Null
+    $stdout = Join-Path $script:WorkingDirectory 'grpc-probe.stdout.log'
+    $stderr = Join-Path $script:WorkingDirectory 'grpc-probe.stderr.log'
     try {
         $grpcAdapter = Start-GRPCAdapter -WriteEnabled $true -Port $grpcPort -Label 'grpc-write-enabled'
-        Invoke-NativeProcess -FilePath $script:GRPCProbeExecutable -ArgumentList @(
+        $arguments = @(
             '-address', "127.0.0.1:$grpcPort",
             '-expected-clsid', $expectedCLSID,
             '-write-enabled',
+            '-reconnect-signals', ('"{0}"' -f $signals),
             # The write-enabled scenario also drives the Subscribe stream, which
             # waits on real source notifications, so it needs a longer bound.
             '-timeout', '120s'
-        ) -TimeoutSeconds 150
+        )
+        $probe = Start-Process -FilePath $script:GRPCProbeExecutable -ArgumentList $arguments -NoNewWindow -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        Invoke-FixtureRecovery -Process $probe -Signals $signals -Frontend 'gRPC'
         $listeners = @(Get-NetTCPConnection -State Listen -OwningProcess $grpcAdapter.Id -ErrorAction SilentlyContinue)
         Assert-True ($listeners.Count -eq 1) 'gRPC adapter did not expose exactly one TCP listener'
         Assert-True ($listeners[0].LocalAddress -eq '127.0.0.1' -and [int]$listeners[0].LocalPort -eq $grpcPort) `
@@ -1057,6 +1066,12 @@ function Test-GRPCWriteEnabledForeground {
         Write-Host "GRPC_WRITE_ENABLED_FOREGROUND_PASS arch=$AdapterArch frontend=grpc typedWrite=true sourceDeniedWrite=true subscribeStream=true valuesLogged=false"
     }
     finally {
+        Stop-Adapter $probe
+        foreach ($log in @($stdout, $stderr)) {
+            if (Test-Path -LiteralPath $log -PathType Leaf) {
+                Get-Content -LiteralPath $log | Write-Host
+            }
+        }
         Stop-Adapter $grpcAdapter
         Stop-ServerProcesses
     }

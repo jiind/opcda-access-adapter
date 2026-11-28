@@ -275,9 +275,13 @@ Table 89's guidance that a server should limit active Publish requests, while
 accepting more than the number of subscriptions created, is implemented as a
 per-connection bound answered with `Bad_TooManyPublishRequests`.
 
-With nothing to report for `maxKeepAliveCount` publishing cycles it answers a
-keep-alive, which carries no `NotificationData` at all and does not consume a
-sequence number.
+A session's Publish request can serve any of its ready subscriptions. The
+highest priority ready subscription answers first. Ready subscriptions of
+equal priority take turns. [OPC UA Part 4, 5.14.2.2](https://reference.opcfoundation.org/specs/OPC-10000-4/5.14.2.2)
+
+A keep-alive becomes eligible after `maxKeepAliveCount` intervals at the
+subscription's own revised publishing rate. The response carries an empty
+`NotificationData` list and preserves the next notification sequence number.
 
 The first cycle is an exception to the count. Clause 5.14.1.1: "when a
 Subscription is created, the first Message is sent at the end of the first

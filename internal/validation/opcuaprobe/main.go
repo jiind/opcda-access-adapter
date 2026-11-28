@@ -209,6 +209,9 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 		if err := c.subscriptionScenario(ctx, token, session, items); err != nil {
 			return err
 		}
+		if err := c.validatePublishPriority(ctx, token, session, items[0]); err != nil {
+			return err
+		}
 		subscribed = true
 	}
 	fmt.Printf(
@@ -452,7 +455,7 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 		return fmt.Errorf("the subscription target did not return a usable scalar")
 	}
 
-	subscription, err := c.createSubscription(token, session, sharedMonitorsPublishLimit)
+	subscription, err := c.createSubscription(token, session, sharedMonitorsPublishLimit, 0)
 	if err != nil {
 		return err
 	}
@@ -534,7 +537,58 @@ func (c *client) subscriptionScenario(ctx context.Context, token opcua.ChannelSe
 	return nil
 }
 
-func (c *client) createSubscription(token opcua.ChannelSecurityToken, session opcua.NodeID, maxNotifications uint32) (opcua.CreateSubscriptionResponse, error) {
+func (c *client) validatePublishPriority(ctx context.Context, token opcua.ChannelSecurityToken, session, node opcua.NodeID) (err error) {
+	high, err := c.createSubscription(token, session, 0, 10)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, c.deleteSubscription(token, session, high.SubscriptionID)) }()
+	first, err := c.publish(token, session)
+	if err != nil {
+		return err
+	}
+	if first.SubscriptionID != high.SubscriptionID || first.NotificationMessage.HasData {
+		return fmt.Errorf("the higher-priority subscription did not send its initial keep-alive")
+	}
+
+	low, err := c.createSubscription(token, session, 0, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, c.deleteSubscription(token, session, low.SubscriptionID)) }()
+	const handle = 4244
+	items, err := c.createMonitoredItems(token, session, low.SubscriptionID, node, opcua.TimestampsNeither, handle)
+	if err != nil {
+		return err
+	}
+	if items[0].StatusCode != opcua.StatusGood {
+		return fmt.Errorf("create the lower-priority monitor: %s", items[0].StatusCode.Hex())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		response, err := c.publish(token, session)
+		if err != nil {
+			return err
+		}
+		if !response.NotificationMessage.HasData {
+			continue
+		}
+		notifications := response.NotificationMessage.Notifications
+		if response.SubscriptionID != low.SubscriptionID || len(notifications) != 1 ||
+			notifications[0].ClientHandle != handle || notifications[0].Value.Status.IsBad() {
+			return fmt.Errorf("Publish returned unexpected data while the higher priority subscription was idle")
+		}
+		fmt.Print("OPCUA_REAL_DA_PUBLISH_PRIORITY_PASS idleHigh=true lowData=true valuesLogged=false\n")
+		return nil
+	}
+	return fmt.Errorf("the lower-priority subscription did not receive its initial DA value")
+}
+
+func (c *client) createSubscription(token opcua.ChannelSecurityToken, session opcua.NodeID, maxNotifications uint32, priority byte) (opcua.CreateSubscriptionResponse, error) {
 	encoder, err := opcua.NewEncoder(c.limits)
 	if err != nil {
 		return opcua.CreateSubscriptionResponse{}, err
@@ -546,6 +600,7 @@ func (c *client) createSubscription(token opcua.ChannelSecurityToken, session op
 		RequestedLifetimeCount:      30,
 		MaxNotificationsPerPublish:  maxNotifications,
 		PublishingEnabled:           true,
+		Priority:                    priority,
 	})
 	body, err := encoder.Bytes()
 	if err != nil {

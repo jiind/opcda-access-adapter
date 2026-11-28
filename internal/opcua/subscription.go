@@ -916,15 +916,10 @@ type uaSubscription struct {
 	// never reset.
 	retransmit      map[uint32]NotificationMessage
 	retransmitOrder []uint32
-	// keepAliveTicks counts publishing intervals with nothing to send.
-	keepAliveTicks uint32
-	// messageSent is the state table's MessageSent, which InitializeSubscription
-	// sets FALSE. Clause 5.14.1.1: "when a Subscription is created, the first
-	// Message is sent at the end of the first publishing cycle to inform the
-	// Client that the Subscription is operational ... This is the only time a
-	// keep-alive Message is sent without waiting for the maximum keep-alive
-	// count to be reached."
-	messageSent bool
+	// lastPublished tracks this subscription's own keep-alive interval.
+	// lastPublishOrder rotates responses among ready subscriptions of equal priority.
+	lastPublished    time.Time
+	lastPublishOrder uint64
 	// lastKeptAlive is when the client last did something that counts as being
 	// present. Clause 5.14.1.1: the lifetime counter "counts the number of
 	// consecutive publishing cycles in which there have been no Publish
@@ -1019,6 +1014,7 @@ type SubscriptionService struct {
 	mu            sync.Mutex
 	subscriptions map[uint32]*uaSubscription
 	nextID        uint32
+	publishOrder  uint64
 }
 
 func NewSubscriptionService(space *AddressSpace, runtime opcda.Runtime, limits SubscriptionLimits, idSeed uint32) (*SubscriptionService, error) {
@@ -1490,13 +1486,6 @@ func (s *SubscriptionService) SetPublishingMode(sessionToken string, request Set
 	}, nil
 }
 
-// Publish answers with whatever the DA core has delivered since the last call.
-//
-// It does not block waiting for a notification. A real UA server holds a
-// Publish request open, but this adapter answers immediately with a keep-alive
-// when there is nothing to report: holding the request would occupy the
-// connection's single request path, and the UA-TCP listener here serves one
-// request at a time per connection.
 // Publish holds the request until the subscription has something to report or
 // a keep-alive is due, which is what OPC 10000-4 5.14.5.1 means by a Publish
 // request being queued in the server. Answering immediately instead turns a
@@ -1641,23 +1630,28 @@ func (s *SubscriptionService) tryPublish(ctx context.Context, sessionToken strin
 	// one this cycle picks. 5.14.1.1 counts "publishing cycles in which there
 	// have been no Publish requests available", so this is what keeps them all
 	// alive.
-	for _, held := range s.subscriptions {
-		if held.sessionToken == sessionToken {
-			held.lastKeptAlive = now
+	var subscription *uaSubscription
+	ownsSubscription := false
+	for _, candidate := range s.subscriptions {
+		if candidate.sessionToken != sessionToken {
+			continue
+		}
+		ownsSubscription = true
+		candidate.lastKeptAlive = now
+		s.collect(ctx, candidate, now)
+		if candidate.readyToPublish(now) && (subscription == nil || candidate.precedes(subscription)) {
+			subscription = candidate
 		}
 	}
-	subscription := s.nextPublishable(sessionToken)
-	if subscription == nil {
+	if !ownsSubscription {
 		return PublishResponse{}, false, uacpError(StatusBadNoSubscription,
 			"this session has no subscription to publish")
 	}
-
-	s.collect(ctx, subscription, now)
-	notifications, more := s.takeNotifications(subscription, now)
-	message, ready := s.buildMessage(subscription, notifications, now)
-	if !ready {
+	if subscription == nil {
 		return PublishResponse{}, false, nil
 	}
+	notifications, more := s.takeNotifications(subscription, now)
+	message := s.buildMessage(subscription, notifications, now)
 
 	available := make([]uint32, 0, len(subscription.retransmit))
 	for sequence := range subscription.retransmit {
@@ -1677,20 +1671,30 @@ func (s *SubscriptionService) tryPublish(ctx context.Context, sessionToken strin
 	}, true, nil
 }
 
-// nextPublishable picks the session's highest-priority subscription that has
-// something to say, falling back to any of its subscriptions so a keep-alive is
-// still sent.
-func (s *SubscriptionService) nextPublishable(sessionToken string) *uaSubscription {
-	var best *uaSubscription
-	for _, subscription := range s.subscriptions {
-		if subscription.sessionToken != sessionToken {
-			continue
-		}
-		if best == nil || subscription.priority > best.priority {
-			best = subscription
+// readyToPublish considers due data and keep-alives without consuming either.
+func (subscription *uaSubscription) readyToPublish(now time.Time) bool {
+	elapsed := float64(now.Sub(subscription.lastPublished)) / float64(time.Millisecond)
+	if subscription.lastPublishOrder == 0 || elapsed >= subscription.publishingInterval*float64(subscription.keepAliveCount) {
+		return true
+	}
+	if subscription.publishingEnabled {
+		for _, id := range subscription.heldOrder {
+			if !subscription.items[id].withinSamplingInterval(now) {
+				return true
+			}
 		}
 	}
-	return best
+	return false
+}
+
+func (subscription *uaSubscription) precedes(other *uaSubscription) bool {
+	if subscription.priority != other.priority {
+		return subscription.priority > other.priority
+	}
+	if subscription.lastPublishOrder != other.lastPublishOrder {
+		return subscription.lastPublishOrder < other.lastPublishOrder
+	}
+	return subscription.id < other.id
 }
 
 // collect drains whatever the DA core has for this subscription.
@@ -1757,8 +1761,7 @@ func (s *SubscriptionService) takeNotifications(subscription *uaSubscription, no
 	stillHeld := subscription.heldOrder[:0]
 	for _, id := range subscription.heldOrder {
 		item := subscription.items[id]
-		elapsed := float64(now.Sub(item.lastReported)) / float64(time.Millisecond)
-		if !item.lastReported.IsZero() && elapsed < item.samplingInterval {
+		if item.withinSamplingInterval(now) {
 			stillHeld = append(stillHeld, id)
 			continue
 		}
@@ -1776,6 +1779,11 @@ func (s *SubscriptionService) takeNotifications(subscription *uaSubscription, no
 	}
 	subscription.heldOrder = stillHeld
 	return notifications, more
+}
+
+func (item *monitoredItem) withinSamplingInterval(now time.Time) bool {
+	elapsed := float64(now.Sub(item.lastReported)) / float64(time.Millisecond)
+	return !item.lastReported.IsZero() && elapsed < item.samplingInterval
 }
 
 // holdUnreadable gives each item the source will not let anyone read its status,
@@ -1847,24 +1855,12 @@ func dataValueForSubscription(value opcda.SubscriptionValue, timestamps Timestam
 	}, timestamps, now)
 }
 
-// buildMessage packages a batch of notifications. With no data to send it
-// counts one publishing cycle towards the keep-alive, and
-// reports ready only once maxKeepAliveCount cycles have passed with nothing to
-// say. Reporting ready on every empty cycle would answer the client's Publish
-// immediately and let it ask again at once, which is the busy loop this holds
-// back.
-func (s *SubscriptionService) buildMessage(subscription *uaSubscription, notifications []MonitoredItemNotification, now time.Time) (NotificationMessage, bool) {
+// buildMessage records which ready subscription answered this request.
+func (s *SubscriptionService) buildMessage(subscription *uaSubscription, notifications []MonitoredItemNotification, now time.Time) NotificationMessage {
+	s.publishOrder++
+	subscription.lastPublishOrder = s.publishOrder
+	subscription.lastPublished = now
 	if len(notifications) == 0 {
-		subscription.keepAliveTicks++
-		// The first cycle answers whatever the count says, because a client
-		// that has just created a subscription is waiting to hear it is
-		// operational -- and with a large keep-alive count it would otherwise
-		// wait that many publishing intervals to find out.
-		if subscription.messageSent && subscription.keepAliveTicks < subscription.keepAliveCount {
-			return NotificationMessage{}, false
-		}
-		subscription.keepAliveTicks = 0
-		subscription.messageSent = true
 		// A keep-alive does not consume a sequence number -- they count
 		// notifications rather than responses -- but it does not repeat the
 		// last one either. Clause 5.14.1.1: each keep-alive "contains the
@@ -1876,11 +1872,9 @@ func (s *SubscriptionService) buildMessage(subscription *uaSubscription, notific
 		// so in as many words: the first keep-alive "contains a sequence number
 		// of 1, indicating that the first NotificationMessage has not yet been
 		// sent".
-		return NotificationMessage{SequenceNumber: subscription.sequenceNumber + 1, PublishTime: now}, true
+		return NotificationMessage{SequenceNumber: subscription.sequenceNumber + 1, PublishTime: now}
 	}
 
-	subscription.keepAliveTicks = 0
-	subscription.messageSent = true
 	subscription.sequenceNumber++
 
 	message := NotificationMessage{
@@ -1890,7 +1884,7 @@ func (s *SubscriptionService) buildMessage(subscription *uaSubscription, notific
 		HasData:        true,
 	}
 	s.queueForRetransmission(subscription, message)
-	return message, true
+	return message
 }
 
 // queueForRetransmission holds a sent message until its client acknowledges it,

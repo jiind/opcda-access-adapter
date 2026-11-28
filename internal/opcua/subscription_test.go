@@ -1295,6 +1295,86 @@ func TestPublishSendsAKeepAliveAfterTheKeepAliveCount(t *testing.T) {
 	}
 }
 
+func createSubscriptionWithPriority(t *testing.T, service *SubscriptionService, priority byte, interval float64) uint32 {
+	t.Helper()
+	response, err := service.CreateSubscription(testSession, CreateSubscriptionRequest{
+		Header:                      RequestHeader{AdditionalHeader: NullExtensionObject()},
+		RequestedPublishingInterval: interval,
+		RequestedMaxKeepAliveCount:  3,
+		PublishingEnabled:           true,
+		Priority:                    priority,
+	}, channelEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.SubscriptionID
+}
+
+func TestPublishSelectsTheHighestPriorityReadySubscription(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	low := createSubscriptionWithPriority(t, service, 1, 250)
+	monitorItem(t, service, low, ItemNodeID("Test/Int32"), 1)
+	lowDA := runtime.latest()
+	high := createSubscriptionWithPriority(t, service, 10, 250)
+	monitorItem(t, service, high, ItemNodeID("Test/Int32"), 2)
+	highDA := runtime.latest()
+
+	lowDA.push(daNotification("Test/Int32", 1, QualityGood))
+	highDA.push(daNotification("Test/Int32", 2, QualityGood))
+	for _, want := range []uint32{high, low} {
+		response := publishResponseAt(t, service, channelEpoch)
+		if response.SubscriptionID != want || !response.NotificationMessage.HasData {
+			t.Fatalf("Publish selected subscription %d, want data from %d", response.SubscriptionID, want)
+		}
+	}
+}
+
+func TestPublishRotatesAmongReadySubscriptionsOfEqualPriority(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	first := createSubscriptionWithPriority(t, service, 1, 250)
+	monitorItem(t, service, first, ItemNodeID("Test/Int32"), 1)
+	firstDA := runtime.latest()
+	second := createSubscriptionWithPriority(t, service, 1, 250)
+	monitorItem(t, service, second, ItemNodeID("Test/Int32"), 2)
+	secondDA := runtime.latest()
+	order := []uint32{first, second}
+
+	for step := range 8 {
+		firstDA.push(daNotification("Test/Int32", int32(step), QualityGood))
+		secondDA.push(daNotification("Test/Int32", int32(step), QualityGood))
+		response := publishResponseAt(t, service, channelEpoch.Add(time.Duration(step)*time.Second))
+		want := order[step%len(order)]
+		if response.SubscriptionID != want || !response.NotificationMessage.HasData {
+			t.Fatalf("Publish %d selected subscription %d, want data from %d", step+1, response.SubscriptionID, want)
+		}
+	}
+}
+
+func TestKeepAliveWaitsForItsSubscriptionInterval(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscriptionWithPriority(t, service, 1, 1000)
+	first := publishResponseAt(t, service, channelEpoch)
+	if first.NotificationMessage.HasData {
+		t.Fatal("an empty subscription reported data")
+	}
+
+	request := PublishRequest{Header: RequestHeader{AdditionalHeader: NullExtensionObject()}}
+	for index := range 5 {
+		at := channelEpoch.Add(time.Duration(index+1) * time.Millisecond)
+		_, ready, err := service.tryPublish(context.Background(), testSession, request, nil, at)
+		if err != nil || ready {
+			t.Fatalf("Publish %d completed before three publishing intervals, error=%v", index+1, err)
+		}
+	}
+	response := publishResponseAt(t, service, channelEpoch.Add(3*time.Second))
+	if response.SubscriptionID != id || response.NotificationMessage.HasData {
+		t.Fatal("the subscription did not send its keep-alive when due")
+	}
+}
+
 // This source offers no OPC DA item properties. PROPERTIES_UNSUPPORTED is the
 // same answer a real source without IOPCItemProperties gives.
 func (*subscribingRuntime) AvailableItemProperties(context.Context, string) ([]opcda.AvailableProperty, error) {
@@ -2698,7 +2778,7 @@ func TestDisabledPublishingHoldsOnlyTheNewestValue(t *testing.T) {
 func consumeFirstKeepAlive(t *testing.T, service *SubscriptionService) {
 	t.Helper()
 	request := PublishRequest{Header: RequestHeader{AdditionalHeader: NullExtensionObject()}}
-	response, ready, err := service.tryPublish(context.Background(), testSession, request, nil, channelEpoch)
+	response, ready, err := service.tryPublish(context.Background(), testSession, request, nil, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

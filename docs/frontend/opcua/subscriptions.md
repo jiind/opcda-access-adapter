@@ -325,6 +325,12 @@ with `Bad_NotConnected`. The status is immediately eligible and follows the
 Publish response limit. The adapter releases the DA subscription. Clients
 recover by explicitly creating monitored items again.
 
+Deleting an item updates an active DA group within the same connection
+generation. After invalidation, deletion removes the monitored item while
+the UA subscription waits for explicit creation to restore its DA group.
+A group update that reaches the DA thread after its connection generation
+has ended is rejected, and unsent values from that connection are discarded.
+
 ## Shutting the listener down
 
 `Shutdown` takes a context, so it has to mean something. It used to close the

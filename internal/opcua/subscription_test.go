@@ -22,7 +22,7 @@ type fakeDASubscription struct {
 
 func newFakeDASubscription(id opcda.SubscriptionID) *fakeDASubscription {
 	return &fakeDASubscription{
-		info: opcda.SubscriptionInfo{ID: id, RevisedUpdateRate: 250 * time.Millisecond},
+		info: opcda.SubscriptionInfo{ID: id, ConnectionGeneration: 1, RevisedUpdateRate: 250 * time.Millisecond},
 		done: make(chan struct{}),
 	}
 }
@@ -934,7 +934,8 @@ func TestDeletedMonitorDoesNotPublishAnUnsentValue(t *testing.T) {
 	id := createSubscriptionWithPublishLimit(t, service, 1)
 	monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
 	removed := monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
-	runtime.latest().push(
+	oldGroup := runtime.latest()
+	oldGroup.push(
 		daNotification("Test/Int32", 1, QualityGood),
 		daNotification("Test/Float", 2, QualityGood),
 	)
@@ -950,8 +951,101 @@ func TestDeletedMonitorDoesNotPublishAnUnsentValue(t *testing.T) {
 	if err != nil || len(response.Results) != 1 || response.Results[0] != StatusGood {
 		t.Fatalf("DeleteMonitoredItems returned %v, %v", response.Results, err)
 	}
+	requests := runtime.subscribeRequests()
+	if len(requests) != 3 || requests[2].RequiredConnectionGeneration != oldGroup.Info().ConnectionGeneration ||
+		len(requests[2].Items) != 1 || requests[2].Items[0] != "Test/Int32" {
+		t.Fatalf("DA group update did not retain its connection and remaining item: %+v", requests)
+	}
 	if count := publishNothing(t, service, now); count != 0 {
 		t.Fatalf("Publish returned %d notifications after the pending item was deleted", count)
+	}
+}
+
+func TestDeletingAfterSourceLossDoesNotCreateAGroup(t *testing.T) {
+	for _, scenario := range []struct {
+		name                string
+		publishBeforeDelete bool
+	}{
+		{name: "before Publish observes the invalidation"},
+		{name: "after Publish observes the invalidation", publishBeforeDelete: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			runtime := &subscribingRuntime{}
+			service, _ := testSubscriptionService(t, runtime)
+			id := createSubscription(t, service)
+			removed := monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+			monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
+			requestsBefore := len(runtime.subscribeRequests())
+			oldGroup := runtime.latest()
+			oldGroup.invalidate()
+			now := channelEpoch.Add(time.Second)
+			if scenario.publishBeforeDelete {
+				if notifications := publishOnce(t, service, now); len(notifications) != 2 {
+					t.Fatalf("Publish returned %d notifications before deletion, want 2", len(notifications))
+				}
+			}
+
+			response, err := service.DeleteMonitoredItems(context.Background(), testSession, DeleteMonitoredItemsRequest{
+				Header:           RequestHeader{AdditionalHeader: NullExtensionObject()},
+				SubscriptionID:   id,
+				MonitoredItemIDs: []uint32{removed.MonitoredItemID},
+			}, now)
+			if err != nil || len(response.Results) != 1 || response.Results[0] != StatusGood {
+				t.Fatalf("DeleteMonitoredItems returned %v, %v", response.Results, err)
+			}
+			if got := len(runtime.subscribeRequests()); got != requestsBefore {
+				t.Fatalf("deletion made %d DA Subscribe requests, want 0", got-requestsBefore)
+			}
+			if !scenario.publishBeforeDelete {
+				notifications := publishOnce(t, service, now)
+				if len(notifications) != 1 || notifications[0].ClientHandle != 2 || notifications[0].Value.Status != StatusBadNotConnected {
+					t.Fatalf("unexpected invalidation notifications %+v", notifications)
+				}
+			}
+
+			if created := monitorItem(t, service, id, ItemNodeID("Test/Int32"), 3); created.StatusCode != StatusGood {
+				t.Fatalf("explicit monitored item creation returned %s", created.StatusCode.Hex())
+			}
+			if got := len(runtime.subscribeRequests()); got != requestsBefore+1 {
+				t.Fatalf("explicit creation made %d DA Subscribe requests, want 1", got-requestsBefore)
+			}
+			if got := runtime.subscribeRequests()[requestsBefore].RequiredConnectionGeneration; got != 0 {
+				t.Fatalf("explicit creation was restricted to connection generation %d", got)
+			}
+			runtime.latest().push(daNotification("Test/Int32", 3, QualityGood))
+			notifications := publishOnce(t, service, now.Add(time.Second))
+			if len(notifications) != 1 || notifications[0].ClientHandle != 3 || notifications[0].Value.Status != StatusGood {
+				t.Fatalf("unexpected notifications after explicit creation %+v", notifications)
+			}
+		})
+	}
+}
+
+func TestExplicitCreateDiscardsUnsentValuesFromTheLostConnection(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscriptionWithPublishLimit(t, service, 1)
+	monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+	monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
+	runtime.latest().push(
+		daNotification("Test/Int32", 1, QualityGood),
+		daNotification("Test/Float", 2, QualityGood),
+	)
+	if !publishResponseAt(t, service, channelEpoch).MoreNotifications {
+		t.Fatal("the second item was not waiting to publish")
+	}
+	runtime.latest().invalidate()
+	if created := monitorItem(t, service, id, ItemNodeID("Test/Int32"), 3); created.StatusCode != StatusGood {
+		t.Fatalf("explicit monitored item creation returned %s", created.StatusCode.Hex())
+	}
+	remaining := map[uint32]bool{1: true, 2: true}
+	for range 2 {
+		notifications := publishOnce(t, service, channelEpoch.Add(time.Second))
+		if len(notifications) != 1 || !remaining[notifications[0].ClientHandle] ||
+			notifications[0].Value.Status != StatusBadNotConnected || !notifications[0].Value.Value.IsNull() {
+			t.Fatalf("unexpected notifications from the lost connection %+v", notifications)
+		}
+		delete(remaining, notifications[0].ClientHandle)
 	}
 }
 

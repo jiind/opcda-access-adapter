@@ -86,6 +86,11 @@ An empty OPC UA subscription accepts a new DA group deadband after a failed
 first create or deletion of its final monitored item. Both cases have
 regression coverage.
 
+DA group updates are bound to the existing group's connection generation.
+After source loss, OPC UA item deletion leaves the subscription awaiting an
+explicit create request. Explicit creation discards pending values from the
+invalidated connection.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

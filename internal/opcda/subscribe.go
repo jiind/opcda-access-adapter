@@ -20,6 +20,9 @@ type SubscribeRequest struct {
 	RequestedUpdateRate time.Duration
 	// Deadband is pPercentDeadband. Zero means the parameter is not sent.
 	Deadband float32
+	// RequiredConnectionGeneration restricts a replacement to the connection
+	// of the group it replaces. Zero allows creation on the current connection.
+	RequiredConnectionGeneration uint64
 }
 
 // SubscriptionItemStatus preserves the exact per-item AddItems outcome. Failed

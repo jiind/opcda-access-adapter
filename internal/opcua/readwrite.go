@@ -1020,7 +1020,7 @@ func statusForRuntimeError(err error) StatusCode {
 		return StatusBadInternalError
 	}
 	switch adapterError.Code {
-	case opcda.CodeRuntimeUnavailable:
+	case opcda.CodeRuntimeUnavailable, opcda.CodeSubscriptionInvalidated:
 		return StatusBadNotConnected
 	case opcda.CodeRuntimeDeadline:
 		return StatusBadTimeout

@@ -261,7 +261,7 @@ this project's, so it is recorded here rather than left for a client to infer.
 
 | UA StatusCode | Adapter error codes |
 |---|---|
-| `Bad_NotConnected` | `RUNTIME_UNAVAILABLE` |
+| `Bad_NotConnected` | `RUNTIME_UNAVAILABLE`, `SUBSCRIPTION_INVALIDATED` |
 | `Bad_Timeout` | `RUNTIME_DEADLINE_EXCEEDED` |
 | `Bad_NotWritable` | `WRITE_DISABLED` |
 | `Bad_TooManyOperations` | `QUEUE_FULL`, `REQUEST_LIMIT_EXCEEDED`, `REGISTERED_ITEM_LIMIT_EXCEEDED` |

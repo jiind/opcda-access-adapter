@@ -1127,6 +1127,7 @@ func (s *SubscriptionService) CreateMonitoredItems(ctx context.Context, sessionT
 		return CreateMonitoredItemsResponse{}, uacpError(StatusBadTooManyMonitoredItems,
 			"the %d monitored item limit would be exceeded", s.limits.MaxMonitoredItems)
 	}
+	s.releaseInvalidatedDASubscription(ctx, subscription, now)
 
 	results := make([]MonitoredItemCreateResult, len(request.ItemsToCreate))
 	created := make([]*monitoredItem, len(request.ItemsToCreate))
@@ -1146,7 +1147,7 @@ func (s *SubscriptionService) CreateMonitoredItems(ctx context.Context, sessionT
 		return s.monitoredItemsResponse(request, results, now), nil
 	}
 
-	rebuildErr := s.rebuildDASubscription(ctx, subscription, now)
+	rebuildErr := s.rebuildDASubscription(ctx, subscription)
 	if rebuildErr == nil {
 		// Now that the group exists the source has revised its update rate.
 		// That rate is a floor: the group cannot sample faster than it, so no
@@ -1177,6 +1178,7 @@ func (s *SubscriptionService) CreateMonitoredItems(ctx context.Context, sessionT
 				results[index] = MonitoredItemCreateResult{StatusCode: status, FilterResult: NullExtensionObject()}
 			}
 		}
+		s.releaseInvalidatedDASubscription(ctx, subscription, now)
 	}
 	return s.monitoredItemsResponse(request, results, now), nil
 }
@@ -1329,9 +1331,9 @@ func requestedSamplingInterval(subscription *uaSubscription, node *Node, request
 	return interval
 }
 
-// rebuildDASubscription replaces the DA subscription with one covering the
-// subscription's current item set.
-func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscription *uaSubscription, now time.Time) error {
+// rebuildDASubscription replaces a live group on the same DA connection or
+// creates the first group for an explicit monitored item request.
+func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscription *uaSubscription) error {
 	itemIDs := make([]opcda.DAItemID, 0, len(subscription.items))
 	seen := make(map[opcda.DAItemID]struct{}, len(subscription.items))
 	for _, item := range subscription.items {
@@ -1357,10 +1359,15 @@ func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscri
 	createCtx, cancel := context.WithTimeout(ctx, s.limits.RequestTimeout)
 	defer cancel()
 	updateRate := time.Duration(subscription.publishingInterval) * time.Millisecond
+	var generation uint64
+	if subscription.da != nil {
+		generation = subscription.da.Info().ConnectionGeneration
+	}
 	created, err := s.runtime.Subscribe(createCtx, opcda.SubscribeRequest{
-		Items:               itemIDs,
-		RequestedUpdateRate: updateRate,
-		Deadband:            subscription.deadband,
+		Items:                        itemIDs,
+		RequestedUpdateRate:          updateRate,
+		Deadband:                     subscription.deadband,
+		RequiredConnectionGeneration: generation,
 	})
 	if err != nil {
 		return err
@@ -1380,8 +1387,22 @@ func (s *SubscriptionService) releaseDASubscription(ctx context.Context, subscri
 	subscription.da = nil
 }
 
-// DeleteMonitoredItems removes items and rebuilds the DA subscription over what
-// remains.
+func (s *SubscriptionService) releaseInvalidatedDASubscription(ctx context.Context, subscription *uaSubscription, now time.Time) bool {
+	if subscription.da == nil {
+		return false
+	}
+	select {
+	case <-subscription.da.Done():
+		s.reportInvalidation(subscription, now)
+		s.releaseDASubscription(ctx, subscription)
+		return true
+	default:
+		return false
+	}
+}
+
+// DeleteMonitoredItems removes items and updates a live DA group on its
+// current connection.
 func (s *SubscriptionService) DeleteMonitoredItems(ctx context.Context, sessionToken string, request DeleteMonitoredItemsRequest, now time.Time) (DeleteMonitoredItemsResponse, error) {
 	if len(request.MonitoredItemIDs) == 0 {
 		return DeleteMonitoredItemsResponse{}, uacpError(StatusBadNothingToDo, "no monitored items were named")
@@ -1411,10 +1432,11 @@ func (s *SubscriptionService) DeleteMonitoredItems(ctx context.Context, sessionT
 			_, exists := subscription.items[id]
 			return !exists
 		})
-		if err := s.rebuildDASubscription(ctx, subscription, now); err != nil {
-			// The items are gone either way; the DA subscription is released so
-			// notifications for removed items cannot keep arriving.
-			s.releaseDASubscription(ctx, subscription)
+		if subscription.da != nil && !s.releaseInvalidatedDASubscription(ctx, subscription, now) {
+			if err := s.rebuildDASubscription(ctx, subscription); err != nil &&
+				!s.releaseInvalidatedDASubscription(ctx, subscription, now) {
+				s.releaseDASubscription(ctx, subscription)
+			}
 		}
 	}
 	return DeleteMonitoredItemsResponse{
@@ -1704,16 +1726,8 @@ func (s *SubscriptionService) collect(ctx context.Context, subscription *uaSubsc
 	// Check invalidation after draining to discard a batch captured just
 	// before the source disconnected.
 	values := subscription.da.Drain()
-	select {
-	case <-subscription.da.Done():
-		// The DA subscription was invalidated, which the DA core does on a
-		// source disconnect. The UA subscription is kept but its DA backing is
-		// released; the client is told through the item status on the next
-		// notification rather than by silently going quiet.
-		s.reportInvalidation(subscription, now)
-		s.releaseDASubscription(ctx, subscription)
+	if s.releaseInvalidatedDASubscription(ctx, subscription, now) {
 		return
-	default:
 	}
 
 	for _, value := range values {

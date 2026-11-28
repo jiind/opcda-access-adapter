@@ -11,6 +11,7 @@
 | Source-built DA fixture | [Fixture results](#recorded-result-opc-foundation-da-205a-fixture) |
 | Two OPC UA MonitoredItems for the same DA ItemID | [Shared ItemID result](#opc-ua-subscription-result) |
 | OPC UA recovery within one session | [Recovery result](#opc-ua-recovery-within-one-session) |
+| gRPC recovery within one client connection | [Stream recovery result](#grpc-recovery-within-one-client-connection) |
 | Independent UA clients | [Client results](#third-party-opc-ua-client-interoperability) |
 | Long-running Read resource bounds | [Soak result](#long-running-resource-result) |
 | Running another authorized test | [Procedure](#real-da-validation-procedure) |
@@ -798,6 +799,26 @@ x64/amd64. The write-enabled gRPC scenario drove the server-streaming
 
 This is fixture evidence for the OPC Foundation DA 2.05a test server, not a
 broad vendor-compatibility claim.
+
+### gRPC recovery within one client connection
+
+PR #261 head `8d2c0897988add5563ed3eda413945fc5eed716c` passed the
+source-built OPC Foundation DA 2.05a fixture on Windows 386 and amd64.
+The probe compared two changed Float values with their Subscribe
+notifications, then verified restoration by device Read and notification.
+[Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46165419743)
+
+- The same gRPC client stayed open while the controller stopped and
+  unregistered the fixture. Device Read returned `Unavailable` with no
+  response data. The old stream ended with `Aborted` and
+  `SUBSCRIPTION_INVALIDATED`. A typed Write returned `Unavailable` and
+  `RUNTIME_UNAVAILABLE`.
+- After re-registration, Status showed a newer connection generation and
+  reconnect count with zero groups. The refused Write was absent from device
+  Read.
+- An explicit Subscribe created a new identity and delivered the current
+  value in the new generation. Cancelling it returned the active group count
+  to zero. The probe kept process values out of the logs.
 
 ### Phase 6 gRPC frontend result
 

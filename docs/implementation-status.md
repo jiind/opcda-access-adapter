@@ -117,10 +117,12 @@ value after reconnect, the refused Write was absent, and notifications resumed
 after explicit monitor creation.
 [Recovery result](validation/compatibility.md#opc-ua-recovery-within-one-session)
 
-The real-DA gRPC probe checks the exact changed and restored scalar values
-on the Subscribe stream. Its outage scenario keeps the same gRPC client,
-checks Read and Write refusal and stream invalidation, then verifies explicit
-resubscription and zero remaining groups after cancellation.
+The real-DA gRPC probe passed on Windows 386 and amd64. Subscribe delivered
+the exact changed and restored scalar values. During an outage, the same
+client observed Read and Write refusal and stream invalidation. Explicit
+resubscription after recovery delivered the current value, and cancellation
+released the group.
+[Stream recovery result](validation/compatibility.md#grpc-recovery-within-one-client-connection)
 
 OPC UA clamps publishing intervals before converting them to durations.
 Large positive requests use the configured maximum. The expiry check uses

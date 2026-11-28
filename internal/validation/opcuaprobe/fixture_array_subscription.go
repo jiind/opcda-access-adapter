@@ -107,7 +107,9 @@ func (c *client) validateFixtureArraySubscription(ctx context.Context, token opc
 		err = errors.Join(err, c.deleteSubscription(token, session, id))
 	}()
 	const handle = 4444
-	monitored, err := c.createMonitoredItems(token, session, id, opcua.ItemNodeID(fixtureArrayItemID), opcua.TimestampsNeither, handle)
+	monitored, err := c.createMonitoredItems(token, session, id, opcua.TimestampsNeither,
+		monitoredTarget{node: opcua.ItemNodeID(fixtureArrayItemID), handle: handle},
+	)
 	if err != nil {
 		return err
 	}

@@ -84,6 +84,7 @@ type subscribingRuntime struct {
 	unsubscribed  []opcda.SubscriptionID
 	err           error
 	nextID        int
+	itemResults   map[opcda.DAItemID]opcda.SubscriptionItemStatus
 	// revisedRate is what the source says it settled on, which a vendor may
 	// place far from the requested rate.
 	revisedRate time.Duration
@@ -102,6 +103,17 @@ func (r *subscribingRuntime) Subscribe(_ context.Context, request opcda.Subscrib
 	}
 	r.nextID++
 	created := newFakeDASubscription(opcda.SubscriptionID(string(rune('a' + r.nextID))))
+	for _, itemID := range request.Items {
+		item, ok := r.itemResults[itemID]
+		if !ok {
+			item = opcda.SubscriptionItemStatus{Active: true, HRESULT: opcda.SOK, HRESULTPresent: true}
+		}
+		item.ItemID = itemID
+		created.info.Items = append(created.info.Items, item)
+		if item.Active {
+			created.info.ActiveItemCount++
+		}
+	}
 	if r.revisedRate > 0 {
 		created.info.RevisedUpdateRate = r.revisedRate
 	}
@@ -823,6 +835,111 @@ func TestMonitoredItemsReportADASubscribeFailure(t *testing.T) {
 	retry := monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
 	if retry.StatusCode != StatusGood {
 		t.Fatalf("retry status = %s", retry.StatusCode.Hex())
+	}
+}
+
+func TestCreateMonitoredItemsReportsDARegistrationResults(t *testing.T) {
+	runtime := &subscribingRuntime{itemResults: map[opcda.DAItemID]opcda.SubscriptionItemStatus{
+		"Test/Missing":      {HRESULT: OPCEUnknownItemID, HRESULTPresent: true},
+		"Test/Invalid":      {HRESULT: OPCEInvalidItemID, HRESULTPresent: true},
+		"Test/ReadDenied":   {HRESULT: OPCEBadRights, HRESULTPresent: true},
+		"Test/NoReadAccess": {Active: true, AccessRights: &opcda.DAAccessRights{Raw: 2, Write: true}, HRESULTPresent: true},
+	}}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscription(t, service)
+	items := []opcda.DAItemID{"Test/Missing", "Test/ReadDenied", "Test/Int32", "Test/Invalid", "Test/NoReadAccess"}
+	request := CreateMonitoredItemsRequest{
+		Header:             RequestHeader{AdditionalHeader: NullExtensionObject()},
+		SubscriptionID:     id,
+		TimestampsToReturn: TimestampsBoth,
+	}
+	for index, itemID := range items {
+		request.ItemsToCreate = append(request.ItemsToCreate, MonitoredItemCreateRequest{
+			ItemToMonitor:  ReadValueID{NodeID: ItemNodeID(itemID), AttributeID: AttributeValue},
+			MonitoringMode: MonitoringModeReporting,
+			RequestedParameters: MonitoringParameters{
+				ClientHandle: uint32(index + 1), SamplingInterval: 250, QueueSize: 1, Filter: NullExtensionObject(),
+			},
+		})
+	}
+	response, err := service.CreateMonitoredItems(context.Background(), testSession, request, channelEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []StatusCode{StatusBadNodeIdUnknown, StatusGood, StatusGood, StatusBadNodeIdInvalid, StatusGood}
+	if len(response.Results) != len(want) {
+		t.Fatalf("got %d results, want %d", len(response.Results), len(want))
+	}
+	for index, result := range response.Results {
+		if result.StatusCode != want[index] || (result.MonitoredItemID != 0) != (want[index] == StatusGood) {
+			t.Errorf("item %s returned %s id=%d, want %s", items[index], result.StatusCode.Hex(), result.MonitoredItemID, want[index].Hex())
+		}
+	}
+	if t.Failed() {
+		return
+	}
+	runtime.latest().push(daNotification("Test/Int32", 1, QualityGood))
+	notifications := publishOnce(t, service, channelEpoch)
+	wantNotifications := map[uint32]StatusCode{2: StatusBadNotReadable, 3: StatusGood, 5: StatusBadNotReadable}
+	for _, notification := range notifications {
+		status, exists := wantNotifications[notification.ClientHandle]
+		if !exists || notification.Value.Status != status || notification.Value.Value.IsNull() != (status == StatusBadNotReadable) {
+			t.Fatalf("unexpected published notification %+v", notification)
+		}
+		delete(wantNotifications, notification.ClientHandle)
+	}
+	if len(wantNotifications) != 0 {
+		t.Fatalf("missing notifications for %v", wantNotifications)
+	}
+}
+
+func TestFailedMonitoredItemRegistrationReleasesTheCandidate(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "empty subscription"
+		if existing {
+			name = "existing active group"
+		}
+		t.Run(name, func(t *testing.T) {
+			runtime := &subscribingRuntime{itemResults: map[opcda.DAItemID]opcda.SubscriptionItemStatus{
+				"Test/Missing": {HRESULT: OPCEUnknownItemID, HRESULTPresent: true},
+			}}
+			service, _ := testSubscriptionService(t, runtime)
+			id := createSubscription(t, service)
+			if existing {
+				monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+			}
+			active := service.subscriptions[id].da
+			result := monitorItem(t, service, id, ItemNodeID("Test/Missing"), 2)
+			if result.StatusCode != StatusBadNodeIdUnknown || result.MonitoredItemID != 0 {
+				t.Fatalf("missing item returned %s id=%d", result.StatusCode.Hex(), result.MonitoredItemID)
+			}
+			if service.subscriptions[id].da != active || runtime.unsubscribeCount() != 1 || runtime.unsubscribed[0] != runtime.latest().Info().ID {
+				t.Fatal("failed registration changed the original group or failed to release the candidate")
+			}
+		})
+	}
+}
+
+func TestCreateMonitoredItemsKeepsAnExistingGroupWhenTheCandidateLosesAnItem(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	id := createSubscription(t, service)
+	monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+	active := runtime.latest()
+	runtime.itemResults = map[opcda.DAItemID]opcda.SubscriptionItemStatus{
+		"Test/Int32": {HRESULT: OPCEUnknownItemID, HRESULTPresent: true},
+	}
+	result := monitorItem(t, service, id, ItemNodeID("Test/Float"), 2)
+	if result.StatusCode != StatusBadOutOfService || result.MonitoredItemID != 0 {
+		t.Fatalf("registration without the existing item returned %s id=%d", result.StatusCode.Hex(), result.MonitoredItemID)
+	}
+	if runtime.unsubscribeCount() != 1 || runtime.unsubscribed[0] != runtime.latest().Info().ID {
+		t.Fatal("replacement did not release the candidate group")
+	}
+	active.push(daNotification("Test/Int32", 1, QualityGood))
+	notifications := publishOnce(t, service, channelEpoch)
+	if len(notifications) != 1 || notifications[0].ClientHandle != 1 || notifications[0].Value.Status != StatusGood {
+		t.Fatalf("existing group did not publish: %+v", notifications)
 	}
 }
 

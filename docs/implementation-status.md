@@ -93,6 +93,11 @@ invalidated connection. The DA fixture rejected a replacement from the old
 generation on both architectures before an explicit Subscribe delivered again.
 [Subscribe result](validation/compatibility.md#phase-7-da-subscribe-core-result)
 
+OPC UA monitored item creation reports DA registration failures in request
+order. Read denials are delivered through Publish. A candidate group that
+would lose a live readable item is released and the current group continues
+to deliver.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

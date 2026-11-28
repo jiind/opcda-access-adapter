@@ -369,6 +369,14 @@ an operator-supplied Graybox installation; that separate result is recorded
 above and does not broaden either server's evidence to other vendors or
 versions.
 
+PR #252 head `2ebf9bf70a9bdcfe85eee00e1bdf3763a65f7917` ran 24 Subscribe
+deadline trials per architecture with the pinned fixture on Windows Server
+2025. On 386, 12 requests returned `RUNTIME_DEADLINE` and 12 handed their
+group to the caller. On amd64 the counts were 8 and 16. The probe explicitly
+released accepted groups and used a successful device Read after each trial
+to wait for the DA thread before checking that zero groups remained active.
+[Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46158056233)
+
 ### Phase 8 OPC UA frontend result
 
 PR #51 workflow run

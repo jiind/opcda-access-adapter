@@ -72,7 +72,9 @@ one-notification Publish limit on both architectures.
 
 The DA thread retains ownership of a new subscription until the caller
 receives it. A request that ends before delivery leaves the group with the
-DA thread for invalidation and release.
+DA thread for invalidation and release. The fixture passed 24 deadline trials
+per architecture with zero active groups after each trial.
+[Subscribe result](validation/compatibility.md#phase-7-da-subscribe-core-result)
 
 ## Release blocker and next work
 

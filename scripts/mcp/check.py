@@ -109,15 +109,16 @@ class Client:
 
 def check_fixture_arrays(client, write_enabled):
     fixtures = (
-        ("ValidationArrays/Int32", "VT_I4", [2, -7, 31], [-31, 7, 2]),
-        ("ValidationArrays/String", "VT_BSTR", ["배열", "fixture"], ["", "변경"]),
+        ("ValidationArrays/Int32", "VT_I4", 3, [2, -7, 31], [-31, 7, 2]),
+        ("ValidationArrays/String", "VT_BSTR", 8, ["배열", "fixture"], ["", "변경"]),
     )
-    for item_id, element_type, initial, changed in fixtures:
+    for item_id, element_type, element_code, initial, changed in fixtures:
         array_type = element_type + "|VT_ARRAY"
+        expected_type = {"code": 0x2000 | element_code, "name": element_type, "array": True}
 
         def check(item, elements):
             assert item["ok"] and item["itemId"] == item_id, "array operation changed the ItemID or failed"
-            assert item["dataType"]["name"] == item["canonicalDataType"]["name"] == array_type, "array VARTYPE changed"
+            assert item["dataType"] == item["canonicalDataType"] == expected_type, "array VARTYPE changed"
             shape = item["value"]
             assert item["valueEncoding"] == "array" and shape["elementDataType"]["name"] == element_type, "array element type changed"
             assert shape["dimensions"] == [{"lowerBound": 0, "length": len(elements)}], "array dimensions changed"

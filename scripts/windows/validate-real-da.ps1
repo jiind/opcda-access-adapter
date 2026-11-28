@@ -988,15 +988,17 @@ function Read-Items {
 }
 
 function Read-ArrayFixtureValue {
-    param([string]$ItemID, [string]$ElementType, [object[]]$Elements)
+    param([string]$ItemID, [string]$ElementType, [int]$ElementCode, [object[]]$Elements)
 
     $response = Read-Items @($ItemID)
     Assert-True ($response.results.Count -eq 1) 'array Read returned a different item count'
     $item = $response.results[0]
-    $arrayType = "$ElementType|VT_ARRAY"
-    Assert-True ($item.ok -and $item.itemId -ceq $ItemID -and
-        $item.dataType.name -ceq $arrayType -and $item.canonicalDataType.name -ceq $arrayType -and
-        $item.valueEncoding -ceq 'array') 'array Read did not preserve the ItemID or VARTYPE'
+    Assert-True ($item.ok -and $item.itemId -ceq $ItemID -and $item.valueEncoding -ceq 'array') `
+        'array Read did not preserve the ItemID or encoding'
+    foreach ($type in @($item.dataType, $item.canonicalDataType)) {
+        Assert-True ($type.name -ceq $ElementType -and $type.code -eq (0x2000 -bor $ElementCode) -and
+            $type.array -and -not (Test-JSONProperty $type 'byRef')) 'array Read did not preserve the VARTYPE'
+    }
     Assert-True ($item.value.elementDataType.name -ceq $ElementType -and $item.value.dimensions.Count -eq 1 -and
         $item.value.dimensions[0].lowerBound -eq 0 -and $item.value.dimensions[0].length -eq $Elements.Count) `
         'array Read did not preserve the element type, shape or lower bound'
@@ -1020,19 +1022,19 @@ function Write-ArrayFixtureValue {
 
 function Test-HTTPArrayRoundTrip {
     foreach ($fixture in @(
-        @{ ItemID = 'ValidationArrays/Int32'; Type = 'VT_I4'; Original = @(2, -7, 31); Changed = @(-31, 7, 2) },
-        @{ ItemID = 'ValidationArrays/String'; Type = 'VT_BSTR'; Original = @('배열', 'fixture'); Changed = @('', '변경') }
+        @{ ItemID = 'ValidationArrays/Int32'; Type = 'VT_I4'; Code = 3; Original = @(2, -7, 31); Changed = @(-31, 7, 2) },
+        @{ ItemID = 'ValidationArrays/String'; Type = 'VT_BSTR'; Code = 8; Original = @('배열', 'fixture'); Changed = @('', '변경') }
     )) {
-        $original = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Original
+        $original = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Original
         $changed = @{ elementDataType = $original.elementDataType; dimensions = $original.dimensions; elements = $fixture.Changed }
         try {
             Write-ArrayFixtureValue $fixture.ItemID $fixture.Type $changed
-            $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Changed
+            $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Changed
         }
         finally {
             Write-ArrayFixtureValue $fixture.ItemID $fixture.Type $original
         }
-        $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Original
+        $null = Read-ArrayFixtureValue $fixture.ItemID $fixture.Type $fixture.Code $fixture.Original
     }
     Write-Host 'HTTP_REAL_DA_ARRAY_PASS variants=2 shape=true restored=true valuesLogged=false'
 }

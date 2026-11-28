@@ -48,6 +48,9 @@ One UA subscription is backed by one DA group, and a group has exactly one
 cannot be honoured, so it is refused; applying somebody else's deadband to it
 would report changes the client did not ask to hear about, or hide ones it did.
 
+After a failed first creation or deletion of the last monitored item, the next
+monitored item can select a new group deadband.
+
 ### Disabled publishing holds the newest value, it does not bank them
 
 Clause 5.14.1.1: disabling "causes the Subscription to cease sending

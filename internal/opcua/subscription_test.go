@@ -1528,6 +1528,65 @@ func TestAPercentDeadbandReachesTheDAGroup(t *testing.T) {
 	}
 }
 
+func TestAnEmptySubscriptionCanChangeItsDeadband(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		createErr error
+		status    StatusCode
+	}{
+		{"the source refused creation", opcda.NewAdapterError(opcda.CodeRuntimeUnavailable, "not connected"), StatusBadNotConnected},
+		{"the last monitored item was deleted", nil, StatusGood},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			runtime := &subscribingRuntime{err: testCase.createErr}
+			service, space := testSubscriptionService(t, runtime)
+			analog := []opcda.AvailableProperty{{ID: opcda.PropertyLowEU}, {ID: opcda.PropertyHighEU}}
+			if err := space.AttachItemProperties("Test/Float", analog, opcda.EUTypeNoEnum, 1000); err != nil {
+				t.Fatal(err)
+			}
+			id := createSubscription(t, service)
+			created, err := service.CreateMonitoredItems(context.Background(), testSession, CreateMonitoredItemsRequest{
+				Header:             RequestHeader{AdditionalHeader: NullExtensionObject()},
+				SubscriptionID:     id,
+				TimestampsToReturn: TimestampsBoth,
+				ItemsToCreate: []MonitoredItemCreateRequest{{
+					ItemToMonitor:  ReadValueID{NodeID: ItemNodeID("Test/Float"), AttributeID: AttributeValue},
+					MonitoringMode: MonitoringModeReporting,
+					RequestedParameters: MonitoringParameters{
+						ClientHandle: 1, SamplingInterval: 250, QueueSize: 1,
+						Filter: dataChangeFilter(t, DataChangeTriggerStatusValue, DeadbandPercent, 12.5),
+					},
+				}},
+			}, channelEpoch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := created.Results[0].StatusCode; result != testCase.status {
+				t.Fatalf("create status = %s, want %s", result.Hex(), testCase.status.Hex())
+			}
+			if testCase.createErr == nil {
+				deleted, err := service.DeleteMonitoredItems(context.Background(), testSession, DeleteMonitoredItemsRequest{
+					Header:           RequestHeader{AdditionalHeader: NullExtensionObject()},
+					SubscriptionID:   id,
+					MonitoredItemIDs: []uint32{created.Results[0].MonitoredItemID},
+				}, channelEpoch)
+				if err != nil || len(deleted.Results) != 1 || deleted.Results[0] != StatusGood {
+					t.Fatalf("DeleteMonitoredItems returned %v, %v", deleted.Results, err)
+				}
+			}
+			runtime.err = nil
+			result := monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+			if result.StatusCode != StatusGood {
+				t.Fatalf("create on an empty subscription returned %s, want Good", result.StatusCode.Hex())
+			}
+			requests := runtime.subscribeRequests()
+			if len(requests) != 2 || requests[1].Deadband != 0 {
+				t.Fatalf("wrong DA group requests after change: %v", requests)
+			}
+		})
+	}
+}
+
 // Clause 5.2 puts the bit on **one** data change notification per monitored
 // item that samples values at the time the change happened. A server that set
 // it on every notification afterwards would tell a client to re-read metadata

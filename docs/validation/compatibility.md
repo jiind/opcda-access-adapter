@@ -319,6 +319,12 @@ Windows denied launch and recorded App Control event `3077` for the artifact.
 The attempt ended before DA activation and removed the temporary test files.
 [Windows App Control event IDs](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/operations/event-id-explanations)
 
+On 2026-11-29 KST, the laptop received a Windows 386 build of
+`2b602343192517918ac54c5c63194987c7f1aa19`. The transferred executable matched
+SHA-256 `c71d727637a2215f6aeeba336ee6d4601f3b4d5cf9a8da084be3e1172fc3f04b`.
+Windows denied the `--version` launch and recorded App Control event `3077`
+for that artifact. The temporary executable and staging folder were removed.
+
 ## Recorded result: OPC Foundation DA 2.05a fixture
 
 - Executed: 2026-08-23 on ephemeral GitHub-hosted Windows Server 2025 VMs.

@@ -82,6 +82,10 @@ interval to determine when a keep-alive is due. Both fixture architectures
 delivered lower priority data while a higher priority subscription was idle.
 [Subscription result](validation/compatibility.md#opc-ua-subscription-result)
 
+An empty OPC UA subscription accepts a new DA group deadband after a failed
+first create or deletion of its final monitored item. Both cases have
+regression coverage.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

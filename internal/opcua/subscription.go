@@ -899,8 +899,7 @@ type uaSubscription struct {
 	// deadband is the percent deadband the DA group carries. A.3.5 maps a
 	// client's PercentDeadband onto it, and a DA group has exactly one, so it
 	// is a property of the subscription rather than of a monitored item.
-	deadband    float32
-	deadbandSet bool
+	deadband float32
 
 	// da is the DA subscription that supplies notifications. It is nil until
 	// the first monitored item is created, because a DA group needs its items.
@@ -1221,7 +1220,7 @@ func (s *SubscriptionService) prepareMonitoredItem(subscription *uaSubscription,
 	// The group has one deadband, so every item in the subscription shares it.
 	// A second item asking for a different one cannot be honoured, and saying
 	// so is better than applying somebody else's.
-	if subscription.deadbandSet && subscription.deadband != deadband {
+	if len(subscription.items) > 0 && subscription.deadband != deadband {
 		return failed(StatusBadMonitoredItemFilterUnsupported), nil
 	}
 	// A node identifier naming a DA item can be monitored without having been
@@ -1270,7 +1269,6 @@ func (s *SubscriptionService) prepareMonitoredItem(subscription *uaSubscription,
 	}
 
 	subscription.deadband = deadband
-	subscription.deadbandSet = true
 	subscription.nextItemID++
 	sampling := requestedSamplingInterval(subscription, node, create.RequestedParameters.SamplingInterval)
 	// A monitored item starts level with the address space. A change that

@@ -129,6 +129,12 @@ Large positive requests use the configured maximum. The expiry check uses
 the full UInt32 lifetime count without prematurely releasing the DA group.
 Both cases have regression coverage.
 
+OPC UA Browse applies the configured page limit across the UInt32 request
+range. CreateSession uses its configured timeout bounds and stores the
+negotiated duration for idle expiry. Regression tests cover oversized
+requests, positive fractional timeout bounds, and expiry at the negotiated
+boundary.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

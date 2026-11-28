@@ -3,6 +3,7 @@ package opcua
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -542,7 +543,7 @@ func TestBrowseRefusesAnUnknownView(t *testing.T) {
 // applies; a smaller client value tightens it.
 func TestRequestedMaxReferencesIsHonoured(t *testing.T) {
 	limits := DefaultBrowseLimits()
-	limits.MaxReferencesPerNode = 10
+	limits.MaxReferencesPerNode = 3
 	service, space := testBrowseService(t, limits)
 	entries := make([]opcda.BrowseEntry, 0, 4)
 	for _, name := range []string{"a", "b", "c", "d"} {
@@ -554,33 +555,31 @@ func TestRequestedMaxReferencesIsHonoured(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := browseRequest(browseAll(space.SourceFolderID()))
-	response, err := service.Browse(context.Background(), testSession, request, channelEpoch)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name      string
+		requested uint32
+		want      int
+	}{
+		{name: "no client limit", requested: 0, want: 3},
+		{name: "smaller client limit", requested: 2, want: 2},
+		{name: "equal to server limit", requested: 3, want: 3},
+		{name: "larger client limit", requested: 1000, want: 3},
+		{name: "upper UInt32 bound", requested: math.MaxUint32, want: 3},
 	}
-	// Four items plus the folder's own HasTypeDefinition.
-	if len(response.Results[0].References) != 5 {
-		t.Fatalf("unlimited request returned %d", len(response.Results[0].References))
-	}
-
-	request.RequestedMaxReferencesPerNode = 2
-	response, err = service.Browse(context.Background(), testSession, request, channelEpoch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Results[0].References) != 2 || len(response.Results[0].ContinuationPoint) == 0 {
-		t.Fatalf("limited request returned %d refs", len(response.Results[0].References))
-	}
-
-	// A client asking for more than the server allows does not raise the bound.
-	request.RequestedMaxReferencesPerNode = 1000
-	response, err = service.Browse(context.Background(), testSession, request, channelEpoch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Results[0].References) != 5 {
-		t.Fatalf("a client could not raise the server bound: %d", len(response.Results[0].References))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := browseRequest(browseAll(space.SourceFolderID()))
+			request.RequestedMaxReferencesPerNode = test.requested
+			response, err := service.Browse(context.Background(), testSession, request, channelEpoch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := response.Results[0]
+			if result.StatusCode != StatusGood || len(result.References) != test.want || len(result.ContinuationPoint) == 0 {
+				t.Fatalf("Browse returned status %s and %d references, want Good with %d references and a continuation point",
+					result.StatusCode.Hex(), len(result.References), test.want)
+			}
+		})
 	}
 }
 

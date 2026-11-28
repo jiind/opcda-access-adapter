@@ -1062,6 +1062,28 @@ function Test-HTTPArrayRoundTrip {
     Write-Host 'HTTP_REAL_DA_ARRAY_PASS variants=2 shape=true restored=true valuesLogged=false'
 }
 
+function Test-HTTPSourceArrayBounds {
+    $item = 'ValidationArrays/Int32'
+    $initial = @(2, -7, 31)
+    $original = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
+    $changed = @{
+        elementDataType = $original.elementDataType
+        dimensions = @(@{ lowerBound = -2; length = 3 })
+        elements = @(31, 2, -7)
+    }
+    try {
+        Write-ArrayFixtureValue $item 'VT_I4' $changed
+        # The sample device recreates a zero-based array with a length of
+        # the original upper bound plus one. This fixture stores one element.
+        $null = Read-ArrayFixtureValue $item 'VT_I4' 3 @($changed.elements[0])
+    }
+    finally {
+        Write-ArrayFixtureValue $item 'VT_I4' $original
+    }
+    $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
+    Write-Host 'HTTP_REAL_DA_SOURCE_ARRAY_BOUNDS_PASS requestedLowerBound=-2 sourceLowerBound=0 sourceLength=1 restored=true valuesLogged=false'
+}
+
 function Get-ResourceSample {
     param([Diagnostics.Process]$Process)
 
@@ -1311,6 +1333,7 @@ try {
     Assert-True ([bool]$writeStatus.writeEnabled) 'explicit Write enablement was not reported'
 
     Test-HTTPArrayRoundTrip
+    Test-HTTPSourceArrayBounds
 
     $floatRead = Read-Items @('Test/Float')
     $float = $floatRead.results[0]

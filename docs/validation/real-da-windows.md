@@ -28,6 +28,9 @@ recorded in [ADR-0006](../design/adr/0006-real-da-validation-fixture.md).
 - one-dimensional zero-based Int32 and BSTR SAFEARRAY Read, Write, and
   restoration through HTTP, gRPC, and MCP, plus the OPC UA array wire
   representation and Write refusal;
+- HTTP Int32 SAFEARRAY Write with a negative lower bound, verifying that Read
+  reports the source's zero-based bounds and shortened array before the test
+  restores the original value;
 - initial, changed-value, and restored-value array notifications through
   gRPC Subscribe and the MCP subscription tools, with the DA group released
   after each case;

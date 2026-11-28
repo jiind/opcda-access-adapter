@@ -64,6 +64,11 @@ executed compatibility claims.
 The real-DA fixture's guided service checks verify both startup records after
 the Application Event Log record ID captured before installation.
 
+The Windows laptop reran the previously blocked builds and verified all four
+Graybox foreground frontends. Temporary services passed start, stop and
+restart. Graybox HTTP service activation under LocalService returned access
+denied. [Laptop result](validation/compatibility.md#follow-up-rerun-with-smart-app-control-temporarily-disabled)
+
 OPC UA Publish keeps one unsent notification per monitored item across response
 limits. Deleting an item clears its pending notification. A DA disconnection
 replaces unsent values with `Bad_NotConnected`. The fixture passed with a
@@ -96,7 +101,9 @@ generation on both architectures before an explicit Subscribe delivered again.
 OPC UA monitored item creation reports DA registration failures in request
 order. Read denials are delivered through Publish. A candidate group that
 would lose a live readable item is released and the current group continues
-to deliver.
+to deliver. Both fixture architectures rejected an unknown ItemID and
+published the valid item in the same request.
+[Subscription result](validation/compatibility.md#opc-ua-subscription-result)
 
 ## Release blocker and next work
 

@@ -98,7 +98,7 @@ func deadbandForFilter(filter ExtensionObject, limits BinaryLimits) (float32, St
 		return 0, StatusGood
 	case DeadbandPercent:
 		// A.3.5 names this as the one the wrapper supports.
-		if decoded.DeadbandValue < 0 || decoded.DeadbandValue > 100 {
+		if !(decoded.DeadbandValue >= 0 && decoded.DeadbandValue <= 100) {
 			return 0, StatusBadDeadbandFilterInvalid
 		}
 		return float32(decoded.DeadbandValue), StatusGood

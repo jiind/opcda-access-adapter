@@ -102,7 +102,7 @@ func (s *Server) decodeSubscribeRequest(request *opcdav1.DASubscribeRequest) (op
 		request.RequestedUpdateRateMs > maximumUpdateRateMilliseconds {
 		return opcda.SubscribeRequest{}, invalidRequest("requested update rate must be between 1ms and 1h")
 	}
-	if request.PercentDeadband < 0 || request.PercentDeadband > 100 {
+	if !(request.PercentDeadband >= 0 && request.PercentDeadband <= 100) {
 		return opcda.SubscribeRequest{}, invalidRequest("percent deadband must be between 0 and 100")
 	}
 	items := make([]opcda.DAItemID, len(request.Items))

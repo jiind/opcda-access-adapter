@@ -418,6 +418,55 @@ func TestBrowsingAnItemExposesItsTableA1Properties(t *testing.T) {
 	}
 }
 
+func TestPropertyBrowseRefreshesAfterLearningCanonicalType(t *testing.T) {
+	item := opcda.DAItemID("Test/Float")
+	nodeID := ItemNodeID(item)
+	runtime := &stubRuntime{available: map[string][]opcda.AvailableProperty{
+		string(item): {{ID: opcda.PropertyHighEU}, {ID: opcda.PropertyLowEU}},
+	}}
+	space := testAddressSpace(t)
+	if err := space.PopulateBranch(nil, []opcda.BrowseEntry{{
+		Kind: opcda.BrowseEntryItem, Name: "Float", ItemID: &item,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	populator, err := NewPopulator(space, runtime, DefaultPopulationLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, testCase := range []struct {
+		canonical *opcda.DAVarType
+		wantType  uint32
+		calls     int
+	}{
+		{nil, NodeIDDataItemType, 1},
+		{varType(opcda.VTR4), NodeIDAnalogItemType, 2},
+		{varType(opcda.VTR4), NodeIDAnalogItemType, 2},
+		{varType(opcda.VTBSTR), NodeIDDataItemType, 3},
+	} {
+		space.LearnFromRead(nodeID, testCase.canonical, nil)
+		if err := populator.EnsureItemProperties(ctx, item, channelEpoch); err != nil {
+			t.Fatal(err)
+		}
+		node, ok := space.Node(nodeID)
+		if !ok || node.TypeDefinition.Numeric != testCase.wantType {
+			t.Fatalf("property Browse did not use the learned type when expecting type definition %d", testCase.wantType)
+		}
+		rangeID := ItemPropertyNodeID(item, "EURange")
+		foundRange := false
+		for _, reference := range node.References {
+			foundRange = foundRange || reference.IsForward && reference.TargetID.NodeID.Equal(rangeID)
+		}
+		if foundRange != (testCase.wantType == NodeIDAnalogItemType) {
+			t.Fatalf("EURange presence disagreed with type definition %d", testCase.wantType)
+		}
+		if runtime.availableCalls != testCase.calls {
+			t.Fatalf("property queries = %d, want %d", runtime.availableCalls, testCase.calls)
+		}
+	}
+}
+
 // A Table A.1 property node carries the ItemID of the item it describes, so
 // every path that turns a node into a DA item has to exclude it. Monitoring one
 // would otherwise subscribe to the item's value and deliver a process value

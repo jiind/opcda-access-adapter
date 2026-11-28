@@ -11,6 +11,7 @@
 | Source-built DA fixture | [Fixture results](#recorded-result-opc-foundation-da-205a-fixture) |
 | Two OPC UA MonitoredItems for the same DA ItemID | [Shared ItemID result](#opc-ua-subscription-result) |
 | OPC UA recovery within one session | [Recovery result](#opc-ua-recovery-within-one-session) |
+| OPC UA analog properties and percent deadband | [Analog fixture result](#opc-ua-analog-properties-and-percent-deadband) |
 | gRPC recovery within one client connection | [Stream recovery result](#grpc-recovery-within-one-client-connection) |
 | Independent UA clients | [Client results](#third-party-opc-ua-client-interoperability) |
 | Long-running Read resource bounds | [Soak result](#long-running-resource-result) |
@@ -686,9 +687,8 @@ x86/386 and x64/amd64. Both reported the same thing:
 opcua item properties tableA1=none described=0 valuesLogged=false
 ```
 
-**The fixture offers no Table A.1 property for any of its items**, so the
-mapping is implemented and unexercised end to end. That is a limitation of this
-server, not of the adapter, and it was established rather than assumed:
+The PR #76 fixture offered none of the named Table A.1 properties. The
+configuration and capability response explain the result.
 
 - The pinned fixture configuration
   (`Source/Test/TestServer/OpcTestServer.config.xml` at the ADR-0006 commit)
@@ -712,9 +712,28 @@ not been swapped.
 The manual Graybox result above supplied a second server and exercised real
 `IOPCItemProperties` responses through the UA address-space path. It verified
 the item-description path and the omission of unnamed or unmapped properties,
-but that installation produced no named Table A.1 property variable
-(`tableA1=none`). `EURange`, `EnumStrings`, and the other named mappings
-therefore still rest on unit tests and the specification.
+and returned `tableA1=none` for the named Table A.1 properties. The later
+analog fixture run below records a named `EURange` property.
+
+### OPC UA analog properties and percent deadband
+
+PR #263 head `9a7ed4b9d9c4d3033670d97f23b5cfdaea74d2cd` passed on Windows
+386 and amd64 with the source-built OPC Foundation DA 2.05a TestServer. The
+staged configuration added one writable Float with the sample's analog EU
+properties. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46166663991)
+
+- Browse, device Read, and a second Browse discovered `EURange` as soon as
+  Read learned the canonical VARTYPE. Reading the property returned the
+  configured Low and High EU as an OPC UA Range.
+- CreateMonitoredItems accepted the analog item's percent deadband. The
+  non-analog item and the NaN filter returned `Bad_DeadbandFilterInvalid` in
+  the same request.
+- Device Read confirmed the below-threshold Write. Two Publish keep-alives
+  arrived without a data notification. The above-threshold Write produced
+  the expected notification on the registered handle.
+- The probe restored the initial value, confirmed it through Read and Publish,
+  and deleted the subscription. Both jobs completed the full four-frontend
+  fixture suite without logging process values.
 
 ### Third-party OPC UA client interoperability
 

@@ -21,7 +21,7 @@ applied:
 |---|---|
 | no filter | accepted; the group gets no deadband |
 | `DataChangeFilter`, deadband `None` or `Percent` in 0–100 | accepted |
-| `DataChangeFilter`, deadband `Percent` outside 0–100 | `Bad_DeadbandFilterInvalid` |
+| `DataChangeFilter`, deadband `Percent` is NaN or outside 0–100 | `Bad_DeadbandFilterInvalid` |
 | `DataChangeFilter`, deadband `Percent` on an item with no `EURange` | `Bad_DeadbandFilterInvalid` — Table 61 names this case too |
 | `DataChangeFilter`, deadband `Absolute` | `Bad_MonitoredItemFilterUnsupported` — `AddGroup` takes a percentage and nothing else |
 | trigger `StatusValueTimestamp` | `Bad_MonitoredItemFilterUnsupported` — DA notifies on a change of value or quality, never on a timestamp alone |

@@ -3,6 +3,7 @@ package grpcfrontend
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -194,6 +195,7 @@ func TestSubscribeParametersAcceptTheirWholeRange(t *testing.T) {
 		{"a full deadband", func(r *opcdav1.DASubscribeRequest) { r.PercentDeadband = 100 }, true},
 		{"just over a full deadband", func(r *opcdav1.DASubscribeRequest) { r.PercentDeadband = 100.0001 }, false},
 		{"a negative deadband", func(r *opcdav1.DASubscribeRequest) { r.PercentDeadband = -0.0001 }, false},
+		{"a NaN deadband", func(r *opcdav1.DASubscribeRequest) { r.PercentDeadband = float32(math.NaN()) }, false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			request := valid()

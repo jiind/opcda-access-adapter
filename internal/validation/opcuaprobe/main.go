@@ -40,21 +40,22 @@ func main() {
 	writeEnabled := flag.Bool("write-enabled", false,
 		"expect Write to be enabled and drive the subscription change scenario")
 	arrayFixture := flag.Bool("array-fixture", false, "verify the real DA fixture's array items")
+	analogFixture := flag.Bool("analog-fixture", false, "verify the real DA fixture's analog item and percent deadband")
 	arrayWriterURL := flag.String("array-writer-url", "", "loopback HTTP writer for the real DA fixture")
 	reconnectSignals := flag.String("reconnect-signals", "", "controller directory for a real DA fixture outage")
 	timeout := flag.Duration("timeout", time.Minute, "bounded scenario deadline")
 	flag.Parse()
 	if flag.NArg() != 0 || *endpointURL == "" || *policyURI == "" ||
 		*timeout <= 0 || *timeout > maximumProbeTimeout || (!*arrayFixture && *arrayWriterURL != "") ||
-		(*reconnectSignals != "" && (!*arrayFixture || !*writeEnabled)) {
+		(*reconnectSignals != "" && (!*arrayFixture || !*writeEnabled)) || (*analogFixture && !*writeEnabled) {
 		fmt.Fprintln(os.Stderr,
-			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-write-enabled] [-array-fixture] [-array-writer-url URL] [-reconnect-signals DIR] [-timeout DURATION]")
+			"usage: opcuaprobe -address HOST:PORT -endpoint-url URL -security-policy-uri URI [-write-enabled] [-array-fixture] [-analog-fixture] [-array-writer-url URL] [-reconnect-signals DIR] [-timeout DURATION]")
 		os.Exit(2)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled, *arrayFixture, *arrayWriterURL, *reconnectSignals); err != nil {
+	if err := run(ctx, *address, *endpointURL, *policyURI, *writeEnabled, *arrayFixture, *analogFixture, *arrayWriterURL, *reconnectSignals); err != nil {
 		fmt.Fprintf(os.Stderr, "OPCUA_REAL_DA_FAIL %v\n", err)
 		os.Exit(1)
 	}
@@ -94,7 +95,7 @@ type client struct {
 	policyURI string
 }
 
-func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled, arrayFixture bool, arrayWriterURL, reconnectSignals string) error {
+func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabled, arrayFixture, analogFixture bool, arrayWriterURL, reconnectSignals string) error {
 	deadline, _ := ctx.Deadline()
 	conn, err := dialWhenReady(ctx, address)
 	if err != nil {
@@ -177,6 +178,12 @@ func run(ctx context.Context, address, endpointURL, policyURI string, writeEnabl
 		return fmt.Errorf("the address space exposed no DA items")
 	}
 	fmt.Printf("opcua address space populated from the source items=%d\n", len(items))
+
+	if analogFixture {
+		if err := c.validateFixtureAnalog(ctx, token, session, items); err != nil {
+			return err
+		}
+	}
 
 	properties, err := c.validateItemProperties(token, session, items)
 	if err != nil {
@@ -644,6 +651,7 @@ func (c *client) createSubscription(token opcua.ChannelSecurityToken, session op
 type monitoredTarget struct {
 	node   opcua.NodeID
 	handle uint32
+	filter opcua.ExtensionObject
 }
 
 func (c *client) createMonitoredItems(token opcua.ChannelSecurityToken, session opcua.NodeID, subscriptionID uint32, timestamps opcua.TimestampsToReturn, targets ...monitoredTarget) ([]opcua.MonitoredItemCreateResult, error) {
@@ -658,7 +666,7 @@ func (c *client) createMonitoredItems(token opcua.ChannelSecurityToken, session 
 			MonitoringMode: opcua.MonitoringModeReporting,
 			RequestedParameters: opcua.MonitoringParameters{
 				ClientHandle: target.handle, SamplingInterval: 250, QueueSize: 1,
-				Filter: opcua.NullExtensionObject(),
+				Filter: target.filter,
 			},
 		}
 	}

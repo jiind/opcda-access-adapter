@@ -3,6 +3,7 @@ package opcua
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -398,13 +399,21 @@ func ItemPropertyForNode(id NodeID) (opcda.DAItemID, itemPropertyBinding, bool) 
 // way a branch is, so a set that does not fit is refused rather than attached in
 // part. A client cannot tell a truncated property list from a complete one.
 func (s *AddressSpace) AttachItemProperties(itemID opcda.DAItemID, available []opcda.AvailableProperty, euType opcda.EUType, maxNodes int) error {
+	_, err := s.attachItemProperties(itemID, available, euType, maxNodes)
+	return err
+}
+
+// attachItemProperties reports the canonical type used to choose the mapping.
+func (s *AddressSpace) attachItemProperties(itemID opcda.DAItemID, available []opcda.AvailableProperty, euType opcda.EUType, maxNodes int) (*opcda.DAVarType, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	item, ok := s.nodes[nodeKey(ItemNodeID(itemID))]
-	if !ok || item.Class != NodeClassVariable || item.ItemID != itemID {
-		return fmt.Errorf("no DA item node for %q", itemID)
+	key := nodeKey(ItemNodeID(itemID))
+	previous, ok := s.nodes[key]
+	if !ok || previous.Class != NodeClassVariable || previous.ItemID != itemID {
+		return nil, fmt.Errorf("no DA item node for %q", itemID)
 	}
-	variableType := variableTypeFor(available, euType, item)
+	item := *previous
+	variableType := variableTypeFor(available, euType, &item)
 	bindings := variableType.Properties
 
 	others := otherPropertiesFor(available, bindings)
@@ -421,12 +430,12 @@ func (s *AddressSpace) AttachItemProperties(itemID opcda.DAItemID, available []o
 	}
 	// The same rule as ResolveVariable: a non-positive budget attaches nothing.
 	if len(s.nodes)-s.standardNodeCount+needed > max(maxNodes, 0) {
-		return fmt.Errorf("%d property nodes for %q would exceed the %d node limit",
+		return nil, fmt.Errorf("%d property nodes for %q would exceed the %d node limit",
 			needed, itemID, maxNodes)
 	}
 	// Re-attaching replaces the previous set rather than adding to it, so a
 	// source that stops offering a property stops reporting it.
-	item.References = keepNonPropertyReferences(item.References)
+	item.References = keepNonPropertyReferences(slices.Clone(item.References))
 	item.DescriptionOffered = itemDescriptionOffered(available)
 	// Annex A.3.1.3 chooses the type from the properties the source offers, so
 	// the type is set here, where those are known, rather than at item creation
@@ -461,9 +470,9 @@ func (s *AddressSpace) AttachItemProperties(itemID opcda.DAItemID, available []o
 			}
 		}
 		property := s.nodes[nodeKey(id)]
-		addForward(item, NumericNodeID(0, NodeIDHasProperty), property)
+		addForward(&item, NumericNodeID(0, NodeIDHasProperty), property)
 		if len(property.References) == 0 {
-			addInverse(property, NumericNodeID(0, NodeIDHasProperty), item)
+			addInverse(property, NumericNodeID(0, NodeIDHasProperty), &item)
 		}
 	}
 	// Table A.1's last row: everything else the source offers, named by its own
@@ -475,12 +484,13 @@ func (s *AddressSpace) AttachItemProperties(itemID opcda.DAItemID, available []o
 			s.nodes[nodeKey(id)] = otherPropertyNode(itemID, offered, duplicated[offered.Description])
 		}
 		property := s.nodes[nodeKey(id)]
-		addForward(item, NumericNodeID(0, NodeIDHasProperty), property)
+		addForward(&item, NumericNodeID(0, NodeIDHasProperty), property)
 		if len(property.References) == 0 {
-			addInverse(property, NumericNodeID(0, NodeIDHasProperty), item)
+			addInverse(property, NumericNodeID(0, NodeIDHasProperty), &item)
 		}
 	}
-	return nil
+	s.nodes[key] = &item
+	return item.canonicalType, nil
 }
 
 // keepNonPropertyReferences drops the HasProperty references a previous attach

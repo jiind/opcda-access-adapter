@@ -46,8 +46,8 @@ check and the remaining suite. [Fixture run](https://github.com/jiind/opcda-acce
 
 String coverage included Unicode and an empty element during write round
 trips. The probes recorded operation outcomes and metadata. Real-source
-results for other array types, multiple dimensions, nonzero lower bounds,
-and change-driven OPC UA array notifications remain open.
+results for other array types, multiple dimensions, and nonzero lower bounds
+remain open.
 
 PR #242 head `002c3e45b47c873f31c1017a9d99cc4e82869791` extended the fixture
 probe to read the OPC UA attributes after reading the arrays. On 386 and
@@ -62,6 +62,13 @@ amd64. gRPC Subscribe and the MCP subscription tools received the initial,
 changed, and restored values for both fixture arrays with their VARTYPE,
 shape, and element order intact. Each operation restored the original value
 and released its DA group. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46139923388)
+
+PR #246 head `e186d0032158f1a149f3d6a46cf9d50c95e2a742` passed on 386 and
+amd64. An OPC UA MonitoredItem received the initial, changed, and restored
+Int32 array through Publish with the expected UA element type, count, and
+order. A separate loopback HTTP adapter wrote the changed array to the same
+fixture, restored its original value, and was stopped after the OPC UA probe
+deleted the subscription. [Fixture run](https://github.com/jiind/opcda-access-adapter/actions/runs/46140672437)
 
 ## Recorded result: MCP stdio and OPC Foundation fixture
 
@@ -278,6 +285,14 @@ files and left the Graybox process set unchanged. Temporary HTTP, gRPC, and
 OPC UA services installed and uninstalled successfully. The HTTP Graybox
 connection under LocalService remained blocked, and its Event Log contained
 one source warning with `0x80070005`.
+
+A subsequent read-only HTTP smoke attempt used adapter commit
+`4a7b9af71f0d147fd0e32148dbaf3213ba321955` built for `windows/386` with Go
+1.26.0. The transferred executable's SHA-256 matched
+`79b076e18f0d96657e259ea74176777e7f115eccf567c9b27724f00969b2b3f1`.
+Windows denied launch and recorded App Control event `3077` for the artifact.
+The attempt ended before DA activation and removed the temporary test files.
+[Windows App Control event IDs](https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/operations/event-id-explanations)
 
 ## Recorded result: OPC Foundation DA 2.05a fixture
 

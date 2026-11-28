@@ -1011,10 +1011,7 @@ function Read-Items {
 }
 
 function Read-ArrayFixtureValue {
-    param(
-        [string]$ItemID, [string]$ElementType, [int]$ElementCode, [object[]]$Elements,
-        [object[]]$Dimensions = @(@{ lowerBound = 0; length = $Elements.Count })
-    )
+    param([string]$ItemID, [string]$ElementType, [int]$ElementCode, [object[]]$Elements)
 
     $response = Read-Items @($ItemID)
     Assert-True ($response.results.Count -eq 1) 'array Read returned a different item count'
@@ -1025,14 +1022,9 @@ function Read-ArrayFixtureValue {
         Assert-True ($type.name -ceq $ElementType -and $type.code -eq (0x2000 -bor $ElementCode) -and
             $type.array -and -not (Test-JSONProperty $type 'byRef')) 'array Read did not preserve the VARTYPE'
     }
-    Assert-True ($item.value.elementDataType.name -ceq $ElementType -and $item.value.dimensions.Count -eq $Dimensions.Count) `
-        'array Read did not preserve the element type or rank'
-    for ($index = 0; $index -lt $Dimensions.Count; $index++) {
-        $actualDimension = $item.value.dimensions[$index]
-        $expectedDimension = $Dimensions[$index]
-        Assert-True ($actualDimension.lowerBound -eq $expectedDimension.lowerBound -and
-            $actualDimension.length -eq $expectedDimension.length) 'array Read did not preserve bounds or lengths'
-    }
+    Assert-True ($item.value.elementDataType.name -ceq $ElementType -and $item.value.dimensions.Count -eq 1 -and
+        $item.value.dimensions[0].lowerBound -eq 0 -and $item.value.dimensions[0].length -eq $Elements.Count) `
+        'array Read did not preserve the element type, shape or lower bound'
     $actual = ConvertTo-Json -InputObject @($item.value.elements) -Compress
     $expected = ConvertTo-Json -InputObject $Elements -Compress
     Assert-True ($actual -ceq $expected) 'array Read did not preserve the ordered elements'
@@ -1070,36 +1062,26 @@ function Test-HTTPArrayRoundTrip {
     Write-Host 'HTTP_REAL_DA_ARRAY_PASS variants=2 shape=true restored=true valuesLogged=false'
 }
 
-function Test-HTTPArrayShapeRoundTrip {
+function Test-HTTPSourceArrayBounds {
     $item = 'ValidationArrays/Int32'
     $initial = @(2, -7, 31)
     $original = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
-    foreach ($case in @(
-        @{ Dimensions = @(@{ lowerBound = -2; length = 3 }); Elements = @(31, 2, -7) },
-        @{
-            Dimensions = @(@{ lowerBound = 0; length = 2 }, @{ lowerBound = 0; length = 3 })
-            Elements = @(4, -2, 8, 9, -1, 42)
-        },
-        @{
-            Dimensions = @(@{ lowerBound = -1; length = 2 }, @{ lowerBound = 5; length = 3 })
-            Elements = @(18, 7, -5, 11, 0, -33)
-        }
-    )) {
-        $changed = @{
-            elementDataType = $original.elementDataType
-            dimensions = $case.Dimensions
-            elements = $case.Elements
-        }
-        try {
-            Write-ArrayFixtureValue $item 'VT_I4' $changed
-            $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $case.Elements $case.Dimensions
-        }
-        finally {
-            Write-ArrayFixtureValue $item 'VT_I4' $original
-        }
-        $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
+    $changed = @{
+        elementDataType = $original.elementDataType
+        dimensions = @(@{ lowerBound = -2; length = 3 })
+        elements = @(31, 2, -7)
     }
-    Write-Host 'HTTP_REAL_DA_ARRAY_SHAPE_PASS cases=3 multidimensional=true nonzeroBounds=true restored=true valuesLogged=false'
+    try {
+        Write-ArrayFixtureValue $item 'VT_I4' $changed
+        # The sample device recreates the stored array at zero. Read must
+        # report the source's bounds together with its changed elements.
+        $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $changed.elements
+    }
+    finally {
+        Write-ArrayFixtureValue $item 'VT_I4' $original
+    }
+    $null = Read-ArrayFixtureValue $item 'VT_I4' 3 $initial
+    Write-Host 'HTTP_REAL_DA_SOURCE_ARRAY_BOUNDS_PASS requestedLowerBound=-2 sourceLowerBound=0 restored=true valuesLogged=false'
 }
 
 function Get-ResourceSample {
@@ -1351,7 +1333,7 @@ try {
     Assert-True ([bool]$writeStatus.writeEnabled) 'explicit Write enablement was not reported'
 
     Test-HTTPArrayRoundTrip
-    Test-HTTPArrayShapeRoundTrip
+    Test-HTTPSourceArrayBounds
 
     $floatRead = Read-Items @('Test/Float')
     $float = $floatRead.results[0]

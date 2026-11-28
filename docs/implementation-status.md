@@ -78,7 +78,9 @@ per architecture with zero active groups after each trial.
 
 OPC UA Publish chooses among ready subscriptions by priority and rotates
 those of equal priority. Each subscription uses its own revised publishing
-interval to determine when a keep-alive is due.
+interval to determine when a keep-alive is due. Both fixture architectures
+delivered lower priority data while a higher priority subscription was idle.
+[Subscription result](validation/compatibility.md#opc-ua-subscription-result)
 
 ## Release blocker and next work
 

@@ -143,7 +143,9 @@ half-understood, and a non-UA frontend may not carry OPC UA settings.
 MCP is the fourth choice and stores `"frontend": {"type":"mcp"}`. It requires
 version 4 and rejects other frontend addresses or UA settings. HTTP remains the
 default. MCP setup saves configuration only; the MCP host launches the process
-and owns stdio. Windows Service installation is unsupported. See the [MCP guide](../frontend/mcp/README.md).
+and owns stdio. Setup prints the executable and configuration paths as MCP
+client launch settings. Windows Service installation is unsupported. See the
+[MCP guide](../frontend/mcp/README.md).
 
 Unknown or duplicate fields, multiple JSON values, unsupported versions,
 invalid listener/bounds, and zero or multiple sources fail closed. Environment
@@ -178,11 +180,15 @@ Invoke-RestMethod http://127.0.0.1:18080/v1/status
 
 Install and uninstall require an elevated terminal. The service uses
 LocalService rather than LocalSystem and stores no password. Lifecycle,
-configuration-load, listener, and shutdown errors are written to the Windows
-Application Event Log under the configured service name; process values are
-not logged. DA connection HRESULTs remain in the bounded HTTP `/v1/status` or
-gRPC `OPCDAAccess.Status` source diagnostic, according to the selected
-frontend.
+configuration-load, listener, DA connection, and shutdown events go to the
+Windows Application Event Log under the configured service name. Foreground
+network frontends report DA connection changes on stderr. The listener can start
+while the adapter is still connecting to the DA server. Check for the separate
+source connected or disconnected message. Repeated identical reconnect errors
+produce one warning until the state or error changes. The warning carries the
+operation and HRESULT when available. Process values are never logged.
+The same DA diagnostic remains available in HTTP `/v1/status` and gRPC
+`OPCDAAccess.Status`.
 
 The SCM command records absolute executable and configuration paths. Put both
 in a stable location readable by LocalService before installing, and do not

@@ -135,7 +135,7 @@ func runDetect(arguments []string, output, errorOutput io.Writer, detect localDe
 func writeUsage(output io.Writer) {
 	fmt.Fprintln(output, "usage:")
 	fmt.Fprintln(output, "  opcda-access-adapter                 run one explicitly configured local DA adapter")
-	fmt.Fprintln(output, "  opcda-access-adapter setup           choose a detected source, HTTP frontend, and execution mode")
+	fmt.Fprintln(output, "  opcda-access-adapter setup           choose a detected source, frontend, and execution mode")
 	fmt.Fprintln(output, "  opcda-access-adapter detect          list local OPC DA 2.0 registrations without activating them")
 	fmt.Fprintln(output, "  opcda-access-adapter run --config F  run a reviewed setup configuration in this terminal")
 	fmt.Fprintln(output, "  opcda-access-adapter service ...     install or remove a background Windows Service")

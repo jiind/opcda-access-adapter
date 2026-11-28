@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -147,7 +150,7 @@ func runSetup(
 
 	fmt.Fprintln(output, "\nAvailable frontends:")
 	fmt.Fprintln(output, "  1) HTTP/JSON (v0)")
-	fmt.Fprintln(output, "  2) gRPC (typed DA-native unary API)")
+	fmt.Fprintln(output, "  2) gRPC (DA-native unary calls and Subscribe)")
 	fmt.Fprintln(output, "  3) OPC UA (SecurityPolicy None; local interoperability only, not production ready)")
 	fmt.Fprintln(output, "  4) MCP (stdio; launched by an MCP client)")
 	frontendChoice, err := prompt.selectNumber("Select one frontend", 4)
@@ -282,19 +285,43 @@ func runSetup(
 			fmt.Fprintln(errorOutput, "the reviewed configuration was retained; no foreground fallback or automatic retry was attempted")
 			return 1
 		}
-		fmt.Fprintf(output, "Windows Service %s installed and started.\n", *serviceName)
-		if config.Frontend == app.FrontendHTTP {
+		writeServiceStarted(output, *serviceName)
+		switch config.Frontend {
+		case app.FrontendHTTP:
 			fmt.Fprintf(output, "Status: http://%s/v1/status\n", config.HTTPListenAddress)
-		} else {
+		case app.FrontendGRPC:
 			fmt.Fprintf(output, "gRPC endpoint: %s (opcda.access.v1.OPCDAAccess/Status)\n", config.GRPCListenAddress)
+		case app.FrontendOPCUA:
+			fmt.Fprintf(output, "OPC UA endpoint: %s\n", config.OPCUA.EndpointURL)
 		}
 	case setupSaveOnly:
-		fmt.Fprintf(output, "Run later with: .\\opcda-access-adapter.exe run --config %s\n", quotePowerShellLiteral(*configPath))
+		writeSavedSetupLaunch(output, *configPath, config.Frontend)
 	default:
 		fmt.Fprintln(errorOutput, "internal setup action mismatch")
 		return 1
 	}
 	return 0
+}
+
+func writeSavedSetupLaunch(output io.Writer, configPath string, frontend app.FrontendType) {
+	executable, err := os.Executable()
+	if err != nil {
+		executable = `.\opcda-access-adapter.exe`
+	}
+	if absolute, err := filepath.Abs(configPath); err == nil {
+		configPath = absolute
+	}
+	if frontend == app.FrontendMCP {
+		fmt.Fprintln(output, "Use these launch settings in your MCP client (stdio):")
+		encoder := json.NewEncoder(output)
+		encoder.SetIndent("", "  ")
+		_ = encoder.Encode(struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}{Command: executable, Args: []string{"run", "--config", configPath}})
+		return
+	}
+	fmt.Fprintf(output, "Run later with PowerShell: & %s run --config %s\n", quotePowerShellLiteral(executable), quotePowerShellLiteral(configPath))
 }
 
 func quotePowerShellLiteral(value string) string {

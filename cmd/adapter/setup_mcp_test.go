@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,7 +43,26 @@ func TestGuidedMCPSetupSavesOnly(t *testing.T) {
 	if code != 0 || written.Frontend != app.FrontendMCP || written.WriteEnabled || started {
 		t.Fatalf("unsafe MCP setup: code=%d started=%t stderr=%s", code, started, errorOutput.String())
 	}
-	if !strings.Contains(output.String(), "no network listener") || !strings.Contains(output.String(), "run --config") {
+	_, launchSettings, found := strings.Cut(output.String(), "Use these launch settings in your MCP client (stdio):\n")
+	if !strings.Contains(output.String(), "no network listener") || !found {
 		t.Fatal("MCP stdio launch instructions missing")
+	}
+	var launch struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(launchSettings), &launch); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := filepath.Abs("mcp.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if launch.Command != executable || !slices.Equal(launch.Args, []string{"run", "--config", path}) {
+		t.Fatalf("incorrect MCP launch settings: %+v", launch)
 	}
 }

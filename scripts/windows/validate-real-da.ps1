@@ -607,7 +607,7 @@ function Get-ServerProcesses {
     return @(Get-Process -Name $script:ServerProcessName -ErrorAction SilentlyContinue)
 }
 
-function Wait-ServiceLifecycleEvent {
+function Wait-ServiceStartupEvents {
     param(
         [Parameter(Mandatory = $true)]
         [string]$ProviderName,
@@ -615,15 +615,16 @@ function Wait-ServiceLifecycleEvent {
         [Parameter(Mandatory = $true)]
         [DateTime]$Since,
 
+        [Parameter(Mandatory = $true)]
+        [string]$Frontend,
+
         [ValidateRange(1, 300)]
         [int]$TimeoutSeconds = 60
     )
 
-    # The service writes its record synchronously, but the Application log makes
-    # it queryable asynchronously, and a loaded shared runner has been observed
-    # taking more than ten seconds. The wait stays bounded; only the bound is
-    # generous enough that a pass means the record was written, not that the
-    # runner happened to be fast.
+    # Application Event Log visibility and DA activation are both asynchronous.
+    # Wait for both records before asserting that startup and source connection
+    # were reported as distinct events.
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     do {
         $events = @(Get-WinEvent -FilterHashtable @{
@@ -631,13 +632,14 @@ function Wait-ServiceLifecycleEvent {
             ProviderName = $ProviderName
             StartTime = $Since
         } -ErrorAction SilentlyContinue)
-        if ($events.Count -gt 0) {
-            # Comma-wrap so a single record is not unrolled into a bare object.
-            return ,$events
+        $messages = @($events | Where-Object { $_.Properties.Count -gt 0 } | ForEach-Object { [string]$_.Properties[0].Value })
+        if (($messages -like "OPC DA Access Adapter $Frontend listener started on *") -and
+            ($messages -like 'OPC DA source connected (generation *)')) {
+            return $true
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
-    return ,@()
+    return $false
 }
 
 function Stop-ServerProcesses {
@@ -747,8 +749,8 @@ function Test-GuidedSetupWindowsService {
             $script:BaseURL = $savedBaseURL
         }
 
-        $serviceEvents = @(Wait-ServiceLifecycleEvent -ProviderName $script:GuidedServiceName -Since $serviceTestStarted)
-        Assert-True ($serviceEvents.Count -ge 1) 'guided service did not write a lifecycle Event Log record'
+        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $script:GuidedServiceName -Since $serviceTestStarted -Frontend 'http'
+        Assert-True $serviceStarted 'guided service did not report listener startup and DA connection separately'
 
         Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(
             'service', 'uninstall', '--name', $script:GuidedServiceName
@@ -827,8 +829,8 @@ function Test-GuidedSetupGRPCWindowsService {
             '-timeout', '60s'
         ) -TimeoutSeconds 90
 
-        $serviceEvents = @(Wait-ServiceLifecycleEvent -ProviderName $serviceName -Since $serviceTestStarted)
-        Assert-True ($serviceEvents.Count -ge 1) 'gRPC guided service did not write a lifecycle Event Log record'
+        $serviceStarted = Wait-ServiceStartupEvents -ProviderName $serviceName -Since $serviceTestStarted -Frontend 'grpc'
+        Assert-True $serviceStarted 'gRPC guided service did not report listener startup and DA connection separately'
 
         Invoke-NativeProcess -FilePath $script:AdapterExecutable -ArgumentList @(
             'service', 'uninstall', '--name', $serviceName

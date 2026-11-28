@@ -559,6 +559,18 @@ func (e *Encoder) WriteDeleteMonitoredItemsResponse(response DeleteMonitoredItem
 	e.writeStatusCodeResults(response.Results, response.Diagnostics)
 }
 
+func (d *Decoder) ReadDeleteMonitoredItemsResponse() (DeleteMonitoredItemsResponse, error) {
+	header, err := d.ReadResponseHeader()
+	if err != nil {
+		return DeleteMonitoredItemsResponse{}, err
+	}
+	results, diagnostics, err := d.readStatusCodeResults()
+	if err != nil {
+		return DeleteMonitoredItemsResponse{}, err
+	}
+	return DeleteMonitoredItemsResponse{Header: header, Results: results, Diagnostics: diagnostics}, nil
+}
+
 func (e *Encoder) WriteSetPublishingModeRequest(request SetPublishingModeRequest) {
 	e.WriteServiceTypeID(SetPublishingModeRequestEncodingID)
 	e.WriteRequestHeader(request.Header)

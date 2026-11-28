@@ -111,6 +111,10 @@ and can retry the deletion. Deleting a monitor with no change to active DA
 registrations reuses the current group, including when the group limit is
 reached. These paths have regression coverage.
 
+The Windows fixture workflow exercises a DA outage within one OPC UA session.
+It checks that Read and Publish carry no stale values, Write is refused,
+and notifications resume after explicit monitor creation.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.

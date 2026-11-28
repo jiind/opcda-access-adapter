@@ -1480,6 +1480,25 @@ func (s *SubscriptionService) releaseInvalidatedDASubscription(ctx context.Conte
 	}
 }
 
+// removesDARegistration accounts for other monitors sharing a DA ItemID.
+func (subscription *uaSubscription) removesDARegistration(removed []*monitoredItem) bool {
+	removedIDs := make(map[opcda.DAItemID]struct{}, len(removed))
+	for _, item := range removed {
+		removedIDs[item.itemID] = struct{}{}
+	}
+	for _, item := range subscription.items {
+		if !item.notReadable {
+			delete(removedIDs, item.itemID)
+		}
+	}
+	for _, item := range subscription.da.Info().Items {
+		if _, removed := removedIDs[item.ItemID]; removed && item.Active {
+			return true
+		}
+	}
+	return false
+}
+
 // DeleteMonitoredItems removes items and updates a live DA group on its
 // current connection.
 func (s *SubscriptionService) DeleteMonitoredItems(ctx context.Context, sessionToken string, request DeleteMonitoredItemsRequest, now time.Time) (DeleteMonitoredItemsResponse, error) {
@@ -1507,7 +1526,8 @@ func (s *SubscriptionService) DeleteMonitoredItems(ctx context.Context, sessionT
 		removed = append(removed, item)
 	}
 	if len(removed) != 0 {
-		if subscription.da != nil && !s.releaseInvalidatedDASubscription(ctx, subscription, now) {
+		groupLive := subscription.da != nil && !s.releaseInvalidatedDASubscription(ctx, subscription, now)
+		if groupLive && subscription.removesDARegistration(removed) {
 			if err := s.rebuildDASubscription(ctx, subscription); err != nil &&
 				!s.releaseInvalidatedDASubscription(ctx, subscription, now) {
 				for _, item := range removed {

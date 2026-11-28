@@ -818,6 +818,44 @@ func TestDeleteSubscriptionAndMonitoredItems(t *testing.T) {
 	}
 }
 
+func TestDeleteMonitoredItemsLeavesAnUnchangedGroupAlone(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		item opcda.DAItemID
+	}{
+		{name: "another monitor for the same item", item: "Test/Int32"},
+		{name: "a monitor with read access denied", item: "Test/Closed"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			runtime := &subscribingRuntime{}
+			service, _ := testSubscriptionService(t, runtime)
+			id := createSubscription(t, service)
+			monitorItem(t, service, id, ItemNodeID("Test/Int32"), 1)
+			remove := monitorItem(t, service, id, ItemNodeID(scenario.item), 2)
+			active := runtime.latest()
+			requests, releases := len(runtime.subscribeRequests()), runtime.unsubscribeCount()
+			runtime.err = opcda.NewAdapterError(opcda.CodeSubscriptionLimit, "no spare DA group")
+
+			response, err := service.DeleteMonitoredItems(context.Background(), testSession, DeleteMonitoredItemsRequest{
+				Header:           RequestHeader{AdditionalHeader: NullExtensionObject()},
+				SubscriptionID:   id,
+				MonitoredItemIDs: []uint32{remove.MonitoredItemID},
+			}, channelEpoch)
+			if err != nil || len(response.Results) != 1 || response.Results[0] != StatusGood {
+				t.Errorf("removing a monitor without changing DA items returned %v, %v", response.Results, err)
+			}
+			if len(runtime.subscribeRequests()) != requests || runtime.unsubscribeCount() != releases {
+				t.Fatal("deletion requested a group change with the same DA items")
+			}
+			active.push(daNotification("Test/Int32", 4, QualityGood))
+			notifications := publishOnce(t, service, channelEpoch)
+			if len(notifications) != 1 || notifications[0].ClientHandle != 1 || notifications[0].Value.Value.Value != int32(4) {
+				t.Fatalf("only the remaining monitor should receive the data: %+v", notifications)
+			}
+		})
+	}
+}
+
 func TestDeleteMonitoredItemsKeepsLiveGroupWhenReplacementFails(t *testing.T) {
 	for _, scenario := range []struct {
 		name    string

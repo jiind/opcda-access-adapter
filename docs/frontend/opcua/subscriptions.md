@@ -172,6 +172,9 @@ and the otherwise successful additions return `Bad_OutOfService`.
 
 ### Deleting items keeps the other monitors active
 
+The current DA group stays in use if the removed monitor had no active DA
+registration or another monitor still uses that registration.
+
 When deleting monitored items requires a new DA group, the current group stays
 active until the replacement covers the remaining readable items. A failed
 replacement leaves the existing monitors and their pending values intact and

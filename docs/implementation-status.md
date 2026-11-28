@@ -107,8 +107,9 @@ published the valid item in the same request.
 
 An OPC UA item deletion that fails to replace a live DA group preserves the
 current monitors and pending notifications. The client receives the failure
-and can retry the deletion. The regression covers a DA timeout and a
-replacement group missing a remaining item.
+and can retry the deletion. Deleting a monitor with no change to active DA
+registrations reuses the current group, including when the group limit is
+reached. These paths have regression coverage.
 
 ## Release blocker and next work
 

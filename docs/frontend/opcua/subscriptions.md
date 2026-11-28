@@ -107,6 +107,11 @@ server is not holding.
 
 ### A subscription's lifetime is enforced, not merely reported
 
+The revised publishing interval is a whole number of milliseconds within the
+server's limits. A positive request above the maximum is revised to the
+maximum. The full UInt32 lifetime count remains valid even when the product
+of the count and the interval exceeds the adapter's elapsed-time representation.
+
 Table 82: "when the publishing timer has expired this number of times without a
 Publish request being available to send a NotificationMessage, then the
 Subscription **shall be deleted** by the Server", and 5.14.1.1 adds that

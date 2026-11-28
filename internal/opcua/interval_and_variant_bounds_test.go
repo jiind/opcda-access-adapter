@@ -3,6 +3,7 @@ package opcua
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -34,6 +35,10 @@ func TestARevisedPublishingIntervalKeepsWhatItCan(t *testing.T) {
 		// Table 82: zero or negative means the fastest supported interval.
 		{"no interval at all", 0, milliseconds(limits.MinPublishingInterval)},
 		{"a negative interval", -1, milliseconds(limits.MinPublishingInterval)},
+		{"fractional milliseconds", 250.75, 250},
+		{"NaN defaults to the minimum", math.NaN(), milliseconds(limits.MinPublishingInterval)},
+		{"positive infinity caps at the maximum", math.Inf(1), milliseconds(limits.MaxPublishingInterval)},
+		{"negative infinity caps at the minimum", math.Inf(-1), milliseconds(limits.MinPublishingInterval)},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := limits.revisePublishingInterval(testCase.requested); got != testCase.want {

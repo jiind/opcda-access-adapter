@@ -3,6 +3,7 @@ package opcua
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -294,6 +295,8 @@ func TestCreateSubscriptionRevisesItsParameters(t *testing.T) {
 		{"negative interval", -1, 5, 100, 100, 5, 15},
 		{"below the floor", 10, 5, 100, 100, 5, 15},
 		{"above the ceiling", 3_600_000, 5, 100, 60_000, 5, 15},
+		{"duration product would overflow", 1e13, 5, 100, 60_000, 5, 15},
+		{"largest finite interval", math.MaxFloat64, 5, 100, 60_000, 5, 15},
 		{"zero keep-alive", 250, 0, 100, 250, limits.MinKeepAliveCount, limits.MinKeepAliveCount * 3},
 		{"short lifetime", 250, 10, 1, 250, 10, 30},
 	}
@@ -329,6 +332,34 @@ func TestCreateSubscriptionRevisesItsParameters(t *testing.T) {
 				t.Fatal("an empty subscription created a DA group")
 			}
 		})
+	}
+}
+
+func TestTheLongestLifetimeDoesNotExpireALiveGroup(t *testing.T) {
+	runtime := &subscribingRuntime{}
+	service, _ := testSubscriptionService(t, runtime)
+	response, err := service.CreateSubscription(testSession, CreateSubscriptionRequest{
+		Header:                      RequestHeader{AdditionalHeader: NullExtensionObject()},
+		RequestedPublishingInterval: 60_000,
+		RequestedMaxKeepAliveCount:  1,
+		RequestedLifetimeCount:      math.MaxUint32,
+		PublishingEnabled:           true,
+	}, channelEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.RevisedLifetimeCount != math.MaxUint32 {
+		t.Fatalf("lifetime = %d, want %d", response.RevisedLifetimeCount, uint32(math.MaxUint32))
+	}
+	item := monitorItem(t, service, response.SubscriptionID, ItemNodeID("Test/Int32"), 1)
+	if item.StatusCode != StatusGood {
+		t.Fatalf("create monitored item returned %s", item.StatusCode.Hex())
+	}
+	if expired := service.ExpireStale(context.Background(), channelEpoch.Add(time.Minute)); expired != 0 {
+		t.Fatalf("the subscription expired after one cycle of %d", response.RevisedLifetimeCount)
+	}
+	if service.Count() != 1 || runtime.unsubscribeCount() != 0 {
+		t.Fatal("the group did not survive a lifetime check")
 	}
 }
 

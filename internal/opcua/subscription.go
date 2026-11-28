@@ -3,6 +3,7 @@ package opcua
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -819,14 +820,17 @@ func (limits SubscriptionLimits) ValidateForConfiguration() error { return limit
 // revisePublishingInterval clamps the request. Table 82: a zero or negative
 // request means the fastest supported interval.
 func (limits SubscriptionLimits) revisePublishingInterval(requested float64) float64 {
-	interval := time.Duration(requested) * time.Millisecond
-	if requested <= 0 || interval < limits.MinPublishingInterval {
-		interval = limits.MinPublishingInterval
+	minimum := float64(limits.MinPublishingInterval / time.Millisecond)
+	maximum := float64(limits.MaxPublishingInterval / time.Millisecond)
+	switch {
+	case math.IsNaN(requested), requested < minimum:
+		return minimum
+	case requested > maximum:
+		return maximum
+	default:
+		// DA update rates use whole milliseconds.
+		return math.Trunc(requested)
 	}
-	if interval > limits.MaxPublishingInterval {
-		interval = limits.MaxPublishingInterval
-	}
-	return float64(interval / time.Millisecond)
 }
 
 // reviseKeepAliveCount clamps the request. Table 82: a zero request means the
@@ -946,15 +950,11 @@ type uaSubscription struct {
 // expired reports whether the client has been gone for the lifetime it was
 // promised: lifetimeCount publishing intervals without a sign of it.
 //
-// Neither input needs guarding. The publishing interval is revised to at least
-// the server's minimum, which validate keeps positive, and lastKeptAlive is set
-// when the subscription is created and only ever moved forward. Guarding them
-// would guard against a subscription that cannot exist, while reading as though
-// one could -- and a guard returning false on a zero interval would quietly
-// exempt that subscription from ever expiring.
+// The lifetime count is positive. Dividing elapsed time by it keeps the
+// comparison within the range of time.Duration for every UInt32 count.
 func (subscription *uaSubscription) expired(now time.Time) bool {
 	interval := time.Duration(subscription.publishingInterval) * time.Millisecond
-	return now.Sub(subscription.lastKeptAlive) >= time.Duration(subscription.lifetimeCount)*interval
+	return now.Sub(subscription.lastKeptAlive)/time.Duration(subscription.lifetimeCount) >= interval
 }
 
 // RepublishRequest is OPC 10000-4 Table 92.

@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
+	"github.com/jiind/opcda-access-adapter/internal/frontend/dajson"
 	"github.com/jiind/opcda-access-adapter/internal/opcda"
 )
 
@@ -131,6 +135,7 @@ func LoadConfigFile(path string) (Config, error) {
 	if len(data) > MaximumConfigFileBytes {
 		return Config{}, fmt.Errorf("configuration file exceeds %d bytes", MaximumConfigFileBytes)
 	}
+	data = bytes.TrimPrefix(data, []byte("\ufeff"))
 	if err := validateConfigJSONStructure(data); err != nil {
 		return Config{}, fmt.Errorf("validate configuration JSON: %w", err)
 	}
@@ -223,6 +228,12 @@ func requireJSONEOF(decoder *json.Decoder) error {
 }
 
 func validateConfigJSONStructure(data []byte) error {
+	if !utf8.Valid(data) {
+		return fmt.Errorf("configuration must be valid UTF-8")
+	}
+	if !dajson.ValidSurrogates(data) {
+		return fmt.Errorf("configuration contains an unpaired UTF-16 surrogate")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := scanConfigJSONValue(decoder, 0); err != nil {
 		return err
@@ -261,10 +272,11 @@ func scanConfigJSONValue(decoder *json.Decoder, depth int) error {
 			if !ok {
 				return fmt.Errorf("configuration object key is not a string")
 			}
-			if _, exists := keys[key]; exists {
+			folded := foldConfigKey(key)
+			if _, exists := keys[folded]; exists {
 				return fmt.Errorf("configuration contains duplicate field %q", key)
 			}
-			keys[key] = struct{}{}
+			keys[folded] = struct{}{}
 			if err := scanConfigJSONValue(decoder, depth+1); err != nil {
 				return err
 			}
@@ -288,6 +300,20 @@ func scanConfigJSONValue(decoder *json.Decoder, depth int) error {
 		return fmt.Errorf("unexpected JSON closing delimiter %q", closing)
 	}
 	return nil
+}
+
+// The JSON decoder matches field names case-insensitively. Keep the same
+// Unicode fold equivalence when detecting duplicates, including nested keys.
+func foldConfigKey(key string) string {
+	return strings.Map(func(r rune) rune {
+		for {
+			next := unicode.SimpleFold(r)
+			if next <= r {
+				return next
+			}
+			r = next
+		}
+	}, key)
 }
 
 // WriteConfigFileExclusive writes a validated setup configuration without

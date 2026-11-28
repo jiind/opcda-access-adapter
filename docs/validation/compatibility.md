@@ -230,6 +230,18 @@ Go 1.26.0. The executable SHA-256 was
   verified separate listener-started and source-connected Application Event
   Log records for HTTP and gRPC services on `386` and `amd64`.
 
+A later non-destructive pass reused the same verified binary. HTTP, gRPC,
+OPC UA, and MCP passed their foreground scenarios. HTTP browsed 146 leaves;
+124 device Reads succeeded and 22 `VT_DATE` items returned
+`UNSUPPORTED_VARTYPE`. The gRPC stream delivered change notifications. OPC UA
+verified BrowseNext, Write, Publish, Republish, and acknowledgement. MCP ran
+32 rapid group cycles with Write disabled and 32 with Write enabled; the
+enabled run restored its test item. Setup preserved existing configuration
+files and left the Graybox process set unchanged. Temporary HTTP, gRPC, and
+OPC UA services installed and uninstalled successfully. The HTTP Graybox
+connection under LocalService remained blocked, and its Event Log contained
+one source warning with `0x80070005`.
+
 ## Recorded result: OPC Foundation DA 2.05a fixture
 
 - Executed: 2026-08-23 on ephemeral GitHub-hosted Windows Server 2025 VMs.

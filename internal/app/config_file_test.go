@@ -105,10 +105,15 @@ func TestConfigFileConcurrentCreateHasOneWinner(t *testing.T) {
 
 func TestLoadConfigFileRejectsInvalidInput(t *testing.T) {
 	tests := map[string]string{
-		"unknown field":   `{"version":1,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false,"extra":true}`,
-		"duplicate field": `{"version":1,"version":1,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false}`,
-		"trailing value":  `{"version":1,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false} {}`,
-		"future version":  `{"version":99,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false}`,
+		"unknown field":                `{"version":1,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false,"extra":true}`,
+		"duplicate field":              `{"version":1,"version":1,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false}`,
+		"case equivalent write policy": `{"version":4,"source":{"progId":"Example.Server.1"},"frontend":{"type":"mcp"},"writeEnabled":false,"WriteEnabled":true}`,
+		"case equivalent source field": `{"version":4,"source":{"progId":"Example.Server.1","ProgID":"Example.Other.1"},"frontend":{"type":"mcp"}}`,
+		"unicode fold source field":    `{"version":4,"source":{"progId":"Example.Server.1"},"\u017fource":{"progId":"Example.Other.1"},"frontend":{"type":"mcp"}}`,
+		"invalid UTF-8":                `{"version":4,"source":{"progId":"Example.` + "\xff" + `"},"frontend":{"type":"mcp"}}`,
+		"unpaired surrogate":           `{"version":4,"source":{"progId":"Example.\ud800"},"frontend":{"type":"mcp"}}`,
+		"trailing value":               `{"version":1,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false} {}`,
+		"future version":               `{"version":99,"source":{"clsid":"{A}"},"frontend":{"type":"http","httpListen":"127.0.0.1:8080"},"writeEnabled":false}`,
 		// An older version may not carry OPC UA settings, and a non-UA frontend
 		// may not carry them at any version.
 		"opcua before version 3": `{"version":2,"source":{"clsid":"{A}"},"frontend":{"type":"opcua","opcuaListen":"127.0.0.1:4840"},"writeEnabled":false}`,
@@ -131,6 +136,21 @@ func TestLoadConfigFileRejectsInvalidInput(t *testing.T) {
 				t.Fatal("invalid configuration was accepted")
 			}
 		})
+	}
+}
+
+func TestLoadConfigFileAcceptsUTF8BOMAndUniqueCaseVariants(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adapter.json")
+	data := "\ufeff" + `{"version":4,"source":{"progId":"Example.Server.1"},"frontend":{"type":"mcp"},"WriteEnabled":false}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Source.ProgID != "Example.Server.1" || config.Frontend != FrontendMCP || config.WriteEnabled {
+		t.Fatalf("reviewed configuration changed while loading: %+v", config)
 	}
 }
 

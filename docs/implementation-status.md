@@ -39,6 +39,8 @@ the DA runtime's reconnect path.
 
 OPC UA nodes report the element `DataType` and array `ValueRank` once the
 source provides the canonical VARTYPE. Array Write remains unsupported.
+OPC UA scalar Write preserves the known canonical DA VARTYPE across Browse
+and refreshes it when a later Read or notification reports a change.
 
 ## Validation achieved
 

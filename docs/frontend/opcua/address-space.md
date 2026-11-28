@@ -367,9 +367,9 @@ so a source lacking one is stating a capability rather than failing.
 
 A Read and a subscription notification both come back through `AddItems`, so
 each one is the source reporting the item's canonical type and access rights.
-The node records them the first time it sees them, which makes its attributes
-accurate for every client that follows. Once known, they are enforced locally
-without asking the source again.
+The node keeps the latest canonical VARTYPE the source reported and learns
+access rights when first available. If Browse omits the VARTYPE, the node
+keeps the type already learned for the same ItemID.
 
 Re-browsing a branch replaces its forward references, so the space reflects the
 source instead of accumulating nodes the source no longer has, while the
@@ -504,10 +504,11 @@ value, as Table 131 requires.
 
 ### Write is strictly typed
 
-The node's canonical DataType decides the VARTYPE, and the `Variant` must
-already carry exactly that type. A `Double` written to an `Int32` node is
-`Bad_TypeMismatch`, and so is a narrower `Int16` — nothing is converted. This
-matches the DA core's own strict typed write.
+The adapter uses the DA item's known canonical VARTYPE and requires the
+matching UA scalar type. For example, `Int32` can carry the value for an item
+whose canonical VARTYPE is `VT_INT`, `VT_I4`, or `VT_ERROR`. The Write uses
+the VARTYPE reported by the source. A `Double` or `Int16` written to an
+`Int32` node returns `Bad_TypeMismatch`.
 
 Table 53 says a server returns `Bad_WriteNotSupported` when it cannot write
 timestamps or an `indexRange`. The DA core writes **values only**, so a write

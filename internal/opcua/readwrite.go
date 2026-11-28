@@ -946,26 +946,19 @@ func (s *DataAccessService) writeToSource(ctx context.Context, items []opcda.Wri
 
 // writeItemForNode builds the strictly typed DA write.
 //
-// When the node's canonical DataType is known, it decides the VARTYPE and the
-// Variant must already carry exactly that Go type: nothing is widened,
-// narrowed, or converted, which matches the DA core's strict typed write.
-//
-// OPC DA reports the canonical type in the AddItems result rather than in
-// Browse, so a browsed item that has never been read has no known type. There
-// the client's own Variant type decides the VARTYPE and the source is the
-// authority: the DA core still writes strictly, and a server whose canonical
-// type differs answers with a type-mismatch HRESULT that Table A.5 maps to
-// Bad_TypeMismatch. Refusing locally instead would make every browsed item
-// permanently unwritable over a restriction the adapter invented.
+// A known canonical DA VARTYPE is used exactly, even when several DA types
+// share a UA scalar type. Until AddItems has supplied it, the UA Variant
+// determines the requested VARTYPE and the DA runtime checks it against the
+// source's canonical type before issuing the Write.
 func writeItemForNode(node *Node, variant Variant) (opcda.WriteItem, bool) {
 	// An array node's DataType describes its elements. A matching scalar
 	// Variant still cannot write that node.
 	if variant.IsNull() || variant.IsArray || node.ValueRank >= ValueRankOneOrMoreDimensions {
 		return opcda.WriteItem{}, false
 	}
-	if node.DataTypeKnown {
-		varType, ok := varTypeForDataTypeNode(node.DataType)
-		if !ok || !variantMatchesVarType(variant, varType) {
+	if node.canonicalType != nil {
+		varType := *node.canonicalType
+		if !variantMatchesVarType(variant, varType) {
 			return opcda.WriteItem{}, false
 		}
 		return opcda.WriteItem{ItemID: node.ItemID, VarType: varType, Value: variant.Value}, true
@@ -1010,76 +1003,10 @@ func varTypeForVariant(variant Variant) (opcda.DAVarType, bool) {
 	}
 }
 
-// varTypeForDataTypeNode inverts the Part 8 DataType mapping for the types this
-// adapter can write. The abstract base type is not writable: it means the
-// source's canonical type had no mapping.
-func varTypeForDataTypeNode(dataType NodeID) (opcda.DAVarType, bool) {
-	if dataType.Namespace != 0 || dataType.Type != NodeIDTypeNumeric {
-		return 0, false
-	}
-	switch dataType.Numeric {
-	case NodeIDBoolean:
-		return opcda.VTBool, true
-	case NodeIDSByte:
-		return opcda.VTI1, true
-	case NodeIDByte:
-		return opcda.VTUI1, true
-	case NodeIDInt16:
-		return opcda.VTI2, true
-	case NodeIDUInt16:
-		return opcda.VTUI2, true
-	case NodeIDInt32:
-		return opcda.VTI4, true
-	case NodeIDUInt32:
-		return opcda.VTUI4, true
-	case NodeIDInt64:
-		return opcda.VTI8, true
-	case NodeIDUInt64:
-		return opcda.VTUI8, true
-	case NodeIDFloat:
-		return opcda.VTR4, true
-	case NodeIDDouble:
-		return opcda.VTR8, true
-	case NodeIDString:
-		return opcda.VTBSTR, true
-	default:
-		return 0, false
-	}
-}
-
+// variantMatchesVarType checks the same scalar representation the DA core uses.
 func variantMatchesVarType(variant Variant, varType opcda.DAVarType) bool {
-	expected, ok := DataTypeFor(varType)
-	if !ok {
-		return false
-	}
-	switch expected {
-	case DataTypeBoolean:
-		return variant.Type == BuiltInBoolean
-	case DataTypeSByte:
-		return variant.Type == BuiltInSByte
-	case DataTypeByte:
-		return variant.Type == BuiltInByte
-	case DataTypeInt16:
-		return variant.Type == BuiltInInt16
-	case DataTypeUInt16:
-		return variant.Type == BuiltInUInt16
-	case DataTypeInt32:
-		return variant.Type == BuiltInInt32
-	case DataTypeUInt32:
-		return variant.Type == BuiltInUInt32
-	case DataTypeInt64:
-		return variant.Type == BuiltInInt64
-	case DataTypeUInt64:
-		return variant.Type == BuiltInUInt64
-	case DataTypeFloat:
-		return variant.Type == BuiltInFloat
-	case DataTypeDouble:
-		return variant.Type == BuiltInDouble
-	case DataTypeString:
-		return variant.Type == BuiltInString
-	default:
-		return false
-	}
+	mapped, ok := varTypeForVariant(variant)
+	return ok && varType == varType.Base() && mapped == varType.DecodesAs()
 }
 
 // statusForRuntimeError maps a DA runtime failure onto a UA status. A source

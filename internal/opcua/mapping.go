@@ -52,6 +52,9 @@ func DataTypeFor(varType opcda.DAVarType) (DataType, bool) {
 // applyDAVariableType sets the metadata from the DA VARTYPE. Part 8 A.3.1.3
 // and A.3.1.4 put the array flag in ValueRank and its element type in DataType.
 func applyDAVariableType(node *Node, varType opcda.DAVarType) {
+	node.canonicalType = &varType
+	node.DataType = NumericNodeID(0, NodeIDBaseDataType)
+	node.DataTypeKnown = false
 	node.ValueRank = ValueRankScalar
 	if varType.IsArray() {
 		node.ValueRank = ValueRankOneOrMoreDimensions

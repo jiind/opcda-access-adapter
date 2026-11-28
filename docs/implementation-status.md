@@ -63,8 +63,12 @@ executed compatibility claims.
 
 The [current Windows execution record](validation/compatibility.md#current-windows-execution-record)
 covers the same adapter revision on the Graybox laptop and the 386 and amd64
-OPC Foundation fixture jobs. It records the initial Graybox MCP assertion
-failure and the passing rerun of the same executable.
+OPC Foundation fixture jobs. The instrumented Graybox run reproduced an MCP
+probe assertion when the source began returning different Quality, timestamp
+and HRESULT metadata through both MCP and HTTP. The corrected comparison
+passed all nine MCP tools in both Write modes during a full laptop rerun.
+The rerun also exposed a mixed Device Read that refused valid items before
+the registration cache filled. [Registration limit result](validation/compatibility.md#registration-limit-with-a-mixed-device-read)
 
 The real-DA fixture's guided service checks verify both startup records after
 the Application Event Log record ID captured before installation.

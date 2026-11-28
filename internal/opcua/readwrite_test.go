@@ -469,7 +469,7 @@ func TestReadNonValueAttributes(t *testing.T) {
 	}
 }
 
-// This adapter exposes no arrays, so an indexRange cannot apply.
+// Read returns whole DA values and rejects index ranges.
 func TestReadRefusesAnIndexRange(t *testing.T) {
 	runtime := &stubRuntime{}
 	service, _ := testDataService(t, runtime)

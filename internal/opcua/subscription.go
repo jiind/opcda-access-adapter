@@ -1180,21 +1180,8 @@ func (s *SubscriptionService) registerMonitoredItems(ctx context.Context, subscr
 	if err != nil {
 		return err
 	}
-	info := group.Info()
-	byItemID := make(map[opcda.DAItemID]opcda.SubscriptionItemStatus, len(info.Items))
-	for _, item := range info.Items {
-		byItemID[item.ItemID] = item
-	}
-
-	canReplace := true
-	if subscription.da != nil {
-		for _, current := range subscription.da.Info().Items {
-			if statusForDARegistration(current) == StatusGood && statusForDARegistration(byItemID[current.ItemID]) != StatusGood {
-				canReplace = false
-				break
-			}
-		}
-	}
+	byItemID := daRegistrationResults(group.Info().Items)
+	canReplace := subscription.keepsCurrentDAItems(byItemID)
 
 	addedActiveItem := false
 	for index, item := range created {
@@ -1223,6 +1210,32 @@ func (s *SubscriptionService) registerMonitoredItems(ctx context.Context, subscr
 		s.releaseDAGroup(ctx, group)
 	}
 	return nil
+}
+
+func daRegistrationResults(items []opcda.SubscriptionItemStatus) map[opcda.DAItemID]opcda.SubscriptionItemStatus {
+	results := make(map[opcda.DAItemID]opcda.SubscriptionItemStatus, len(items))
+	for _, item := range items {
+		results[item.ItemID] = item
+	}
+	return results
+}
+
+func (subscription *uaSubscription) keepsCurrentDAItems(candidate map[opcda.DAItemID]opcda.SubscriptionItemStatus) bool {
+	if subscription.da == nil {
+		return true
+	}
+	remaining := make(map[opcda.DAItemID]bool, len(subscription.items))
+	for _, monitor := range subscription.items {
+		if !monitor.notReadable {
+			remaining[monitor.itemID] = true
+		}
+	}
+	for _, item := range subscription.da.Info().Items {
+		if remaining[item.ItemID] && statusForDARegistration(item) == StatusGood && statusForDARegistration(candidate[item.ItemID]) != StatusGood {
+			return false
+		}
+	}
+	return true
 }
 
 func statusForDARegistration(item opcda.SubscriptionItemStatus) StatusCode {
@@ -1428,7 +1441,11 @@ func (s *SubscriptionService) openDASubscription(ctx context.Context, subscripti
 func (s *SubscriptionService) rebuildDASubscription(ctx context.Context, subscription *uaSubscription) error {
 	created, err := s.openDASubscription(ctx, subscription)
 	if err != nil {
-		return err
+		return uacpError(statusForRuntimeError(err), "DA group replacement failed")
+	}
+	if created != nil && !subscription.keepsCurrentDAItems(daRegistrationResults(created.Info().Items)) {
+		s.releaseDAGroup(ctx, created)
+		return uacpError(StatusBadOutOfService, "DA group replacement lost a remaining monitored item")
 	}
 	s.releaseDASubscription(ctx, subscription)
 	subscription.da = created
@@ -1477,7 +1494,7 @@ func (s *SubscriptionService) DeleteMonitoredItems(ctx context.Context, sessionT
 	}
 
 	results := make([]StatusCode, len(request.MonitoredItemIDs))
-	removed := false
+	removed := make([]*monitoredItem, 0, len(request.MonitoredItemIDs))
 	for index, id := range request.MonitoredItemIDs {
 		item, ok := subscription.items[id]
 		if !ok {
@@ -1487,19 +1504,23 @@ func (s *SubscriptionService) DeleteMonitoredItems(ctx context.Context, sessionT
 		delete(subscription.items, id)
 		delete(subscription.byHandle, item.clientHandle)
 		results[index] = StatusGood
-		removed = true
+		removed = append(removed, item)
 	}
-	if removed {
+	if len(removed) != 0 {
+		if subscription.da != nil && !s.releaseInvalidatedDASubscription(ctx, subscription, now) {
+			if err := s.rebuildDASubscription(ctx, subscription); err != nil &&
+				!s.releaseInvalidatedDASubscription(ctx, subscription, now) {
+				for _, item := range removed {
+					subscription.items[item.id] = item
+					subscription.byHandle[item.clientHandle] = item
+				}
+				return DeleteMonitoredItemsResponse{}, err
+			}
+		}
 		subscription.heldOrder = slices.DeleteFunc(subscription.heldOrder, func(id uint32) bool {
 			_, exists := subscription.items[id]
 			return !exists
 		})
-		if subscription.da != nil && !s.releaseInvalidatedDASubscription(ctx, subscription, now) {
-			if err := s.rebuildDASubscription(ctx, subscription); err != nil &&
-				!s.releaseInvalidatedDASubscription(ctx, subscription, now) {
-				s.releaseDASubscription(ctx, subscription)
-			}
-		}
 	}
 	return DeleteMonitoredItemsResponse{
 		Header: ResponseHeader{

@@ -170,6 +170,14 @@ already active in the current DA group. The current group continues to deliver,
 and the otherwise successful additions return `Bad_OutOfService`.
 [CreateMonitoredItems](https://reference.opcfoundation.org/specs/OPC-10000-4/5.13.2)
 
+### Deleting items keeps the other monitors active
+
+When deleting monitored items requires a new DA group, the current group stays
+active until the replacement covers the remaining readable items. A failed
+replacement leaves the existing monitors and their pending values intact and
+returns a service error. After source invalidation, the UA client can still
+delete monitors while the subscription waits for explicit creation.
+
 ### The sampling interval a monitored item is promised
 
 A DA group has one update rate for every item in it, and OPC UA gives each

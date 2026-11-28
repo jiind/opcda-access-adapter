@@ -105,6 +105,11 @@ to deliver. Both fixture architectures rejected an unknown ItemID and
 published the valid item in the same request.
 [Subscription result](validation/compatibility.md#opc-ua-subscription-result)
 
+An OPC UA item deletion that fails to replace a live DA group preserves the
+current monitors and pending notifications. The client receives the failure
+and can retry the deletion. The regression covers a DA timeout and a
+replacement group missing a remaining item.
+
 ## Release blocker and next work
 
 1. Create the isolated local Windows environment.
